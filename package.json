@@ -1,8 +1,10 @@
 {
-  "name": "medb",
-  "module": "index.ts",
+  "name": "@ments/db",
+  "module": "satidb.ts",
+  "main": "./satidb.ts",
+  "version": "1.6.0",
   "type": "module",
-  "private": true,
+  "private": false,
   "devDependencies": {
     "@types/bun": "latest"
   },
@@ -11,5 +13,8 @@
   },
   "dependencies": {
     "zod": "^3.25.67"
+  },
+  "bin": {
+    "satidb-gen": "./gen.ts"
   }
 }
