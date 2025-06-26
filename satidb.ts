@@ -10,7 +10,8 @@ type Relationship = {
   type: 'belongs-to' | 'one-to-many';
   from: string;
   to: string;
-  field: string;
+  relationshipField: string; // e.g., 'chats' in Personality for one-to-many
+  foreignKey: string; // e.g., 'personalityId' in Chat
 };
 
 type LazyMethod<T = any, R = any> = {
@@ -47,17 +48,20 @@ class MyDatabase extends EventEmitter {
     this.initializeTables();
 
     for (const entityName of Object.keys(schemas)) {
-      (this as any)[entityName] = {
-        insert: (data: any) => this.insert(entityName, data),
-        get: (conditions: any, fields?: string[]) => this.get(entityName, conditions, fields),
-        find: (conditions?: any, options?: { limit?: number; offset?: number }) =>
-          this.find(entityName, conditions, options),
-        update: (id: string, data: any) => this.update(entityName, id, data),
-        upsert: (data: any, conditions?: any) => this.upsert(entityName, data, conditions),
-        delete: (id: string) => this.delete(entityName, id),
-        subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: any) => void) =>
-          this.subscribe(event, entityName, callback),
+      // Make the entity accessor callable for find operations
+      const accessor: any = (conditions: any) => this.find(entityName, conditions);
+
+      // Attach other methods to the accessor function object
+      accessor.insert = (data: any) => this.insert(entityName, data);
+      accessor.get = (conditions: any) => this.get(entityName, conditions);
+      accessor.update = (id: string, data: any) => this.update(entityName, id, data);
+      accessor.upsert = (data: any, conditions?: any) => this.upsert(entityName, data, conditions);
+      accessor.delete = (id: string) => this.delete(entityName, id);
+      accessor.subscribe = (event: 'insert' | 'update' | 'delete', callback: (data: any) => void) => {
+        this.subscribe(event, entityName, callback);
       };
+
+      (this as any)[entityName] = accessor;
     }
   }
 
@@ -109,11 +113,14 @@ class MyDatabase extends EventEmitter {
               name => schemas[name] === targetSchema
             );
             if (targetEntityName) {
+              const singularTarget = targetEntityName.endsWith('s') ? targetEntityName.slice(0, -1) : targetEntityName;
+              const foreignKey = `${singularTarget}Id`;
               relationships.push({
                 type: relType,
                 from: entityName,
                 to: targetEntityName,
-                field: fieldName,
+                relationshipField: fieldName,
+                foreignKey: relType === 'belongs-to' ? foreignKey : '',
               });
             }
           }
@@ -132,43 +139,52 @@ class MyDatabase extends EventEmitter {
 
     for (const rel of this.relationships) {
       lazyMethods[rel.from] = lazyMethods[rel.from] || [];
-      const singularFrom = rel.from.endsWith('s') ? rel.from.slice(0, -1) : rel.from;
 
       if (rel.type === 'one-to-many') {
+        // e.g., personality.chats()
+        const singularParent = rel.from.endsWith('s') ? rel.from.slice(0, -1) : rel.from;
+        const foreignKeyInChild = `${singularParent}Id`;
         lazyMethods[rel.from].push({
-          name: rel.field,
+          name: rel.relationshipField,
           type: 'one-to-many',
           childEntityName: rel.to,
           parentEntityName: rel.from,
-          fetch: (entity) => {
-            const foreignKeyField = `${singularFrom}Id`;
-            return this.find(rel.to, { [foreignKeyField]: entity.id });
+          fetch: (entity) => (conditions: any = {}) => {
+            return this.find(rel.to, { ...conditions, [foreignKeyInChild]: entity.id });
           },
         });
       } else if (rel.type === 'belongs-to') {
+        // e.g., chat.personality()
         lazyMethods[rel.from].push({
-          name: rel.field,
+          name: rel.relationshipField,
           type: 'belongs-to',
           fetch: (entity) => {
-            const singularTo = rel.to.endsWith('s') ? rel.to.slice(0, -1) : rel.to;
-            const foreignKeyField = `${singularTo}Id`;
-            const relatedId = entity[foreignKeyField];
-            return relatedId ? this.get(rel.to, { id: relatedId }) : null; 
+            const relatedId = entity[rel.foreignKey];
+            return () => (relatedId ? this.get(rel.to, { id: relatedId }) : null);
           },
         });
 
         // Build inverse relationship (one-to-many)
+        // e.g., personality.chats() is the inverse of chat.personality()
         const inverseName = rel.from;
         lazyMethods[rel.to] = lazyMethods[rel.to] || [];
+
+        // Find the corresponding one-to-many relationship defined on the parent
+        const parentRel = this.relationships.find(r => r.type === 'one-to-many' && r.from === rel.to && r.to === rel.from);
+
+        // Use the explicitly defined field name for the inverse relationship if it exists, otherwise use the entity name
+        const inverseRelationshipField = parentRel ? parentRel.relationshipField : inverseName;
+
+        const singularParent = rel.to.endsWith('s') ? rel.to.slice(0, -1) : rel.to;
+        const foreignKeyInChild = `${singularParent}Id`;
+
         lazyMethods[rel.to].push({
-          name: inverseName,
+          name: inverseRelationshipField,
           type: 'one-to-many',
           childEntityName: rel.from,
           parentEntityName: rel.to,
-          fetch: (entity) => {
-            const singularParent = rel.to.endsWith('s') ? rel.to.slice(0, -1) : rel.to;
-            const foreignKeyField = `${singularParent}Id`;
-            return this.find(rel.from, { [foreignKeyField]: entity.id });
+          fetch: (entity) => (conditions: any = {}) => {
+            return this.find(rel.from, { ...conditions, [foreignKeyInChild]: entity.id });
           },
         });
       }
@@ -191,9 +207,7 @@ class MyDatabase extends EventEmitter {
         rel => rel.type === 'belongs-to' && rel.from === entityName
       );
       for (const rel of belongsToRels) {
-        const singularTo = rel.to.endsWith('s') ? rel.to.slice(0, -1) : rel.to;
-        const foreignKeyField = `${singularTo}Id`;
-        columns.push(`${foreignKeyField} TEXT REFERENCES ${rel.to}(id)`);
+        columns.push(`${rel.foreignKey} TEXT REFERENCES ${rel.to}(id)`);
       }
 
       const createTableSql = `CREATE TABLE IF NOT EXISTS ${entityName} (id TEXT PRIMARY KEY, ${columns.join(', ')})`;
@@ -302,19 +316,52 @@ class MyDatabase extends EventEmitter {
 
     const lazyMethodDefs = this.lazyMethods[entityName] || [];
     for (const methodDef of lazyMethodDefs) {
+      const fetcher = methodDef.fetch(entity);
+
       if (methodDef.type === 'one-to-many') {
-        const singularParent = methodDef.parentEntityName!.endsWith('s')
-          ? methodDef.parentEntityName!.slice(0, -1)
-          : methodDef.parentEntityName!;
-        const foreignKey = `${singularParent}Id`;
-        augmentedEntity[methodDef.name] = () => methodDef.fetch(entity);
+        const singularParentName = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
+        const foreignKey = `${singularParentName}Id`;
+
+        // e.g., chat.messages()
+        const findRel: any = (conditions: any) => fetcher(conditions); // becomes chat.messages()
+
+        // e.g., chat.messages.push()
+        findRel.push = (data: any) => this.insert(methodDef.childEntityName!, { ...data, [foreignKey]: entity.id });
+
+        augmentedEntity[methodDef.name] = findRel;
+
+        // e.g., chat.message(id)
+        const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
+        augmentedEntity[singularName] = (id: string) => this.get(methodDef.childEntityName!, { id, [foreignKey]: entity.id });
+
       } else {
-        augmentedEntity[methodDef.name] = () => methodDef.fetch(entity);
+        // e.g., chat.personality()
+        augmentedEntity[methodDef.name] = fetcher;
       }
     }
-    return augmentedEntity;
-  }
 
+    const storableFieldNames = new Set(this.getStorableFields(this.schemas[entityName]).map(f => f.name));
+
+    // Wrap the entity in a proxy to enable reactive updates
+    const proxyHandler: ProxyHandler<T> = {
+      set: (target: T, prop: string, value: any): boolean => {
+        // If the property is a storable data field and the value has changed
+        if (storableFieldNames.has(prop) && target[prop] !== value) {
+          // Persist the change to the database
+          this.update(entityName, target.id, { [prop]: value });
+        }
+
+        // Perform the original set operation on the target object
+        target[prop] = value;
+        return true;
+      },
+      get: (target: T, prop: string, receiver: any): any => {
+        return Reflect.get(target, prop, receiver);
+      }
+    };
+
+    return new Proxy(augmentedEntity, proxyHandler);
+  }
   /**
    * Executes a transaction for atomic operations.
    * @param callback Transaction callback.
@@ -343,7 +390,7 @@ class MyDatabase extends EventEmitter {
       const schema = this.schemas[entityName];
       if (!schema) throw new Error(`Unknown entity: ${entityName}`);
       const id = this.generateId(entityName, data);
-      const validatedData = schema.parse({ ...data, id }); // Use full schema
+      const validatedData = (schema as z.ZodObject<any>).passthrough().parse({ ...data, id }); // Use passthrough to keep foreign keys
       const storableData = Object.fromEntries(
         Object.entries(validatedData).filter(([key]) => !this.isRelationshipField(schema, key))
       );
@@ -374,20 +421,17 @@ class MyDatabase extends EventEmitter {
    */
   get<T extends Record<string, any>>(
     entityName: string,
-    conditions: Partial<T>,
-    fields: (keyof T)[] = []
+    conditions: string | Partial<T>
   ): T | null {
     try {
       if (!this.schemas[entityName]) throw new Error(`Unknown entity: ${entityName}`);
-      const selectFields = fields.length ? fields.join(', ') : '*';
-      const whereClause = Object.keys(conditions).map(key => `${key} = ?`).join(' AND ');
-      const sql = `SELECT ${selectFields} FROM ${entityName} WHERE ${whereClause}`;
-      const row = this.db.query(sql).get(...Object.values(conditions));
-      if (row) {
-        const entity = this.transformFromStorage(row, this.schemas[entityName]) as T;
-        return this._attachMethods(entityName, entity);
+      const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+      if (Object.keys(queryConditions).length === 0) {
+        return null;
       }
-      return null;
+
+      const results = this.find(entityName, { ...queryConditions, $limit: 1 });
+      return results.length > 0 ? (results[0] as T) : null;
     } catch (error) {
       throw new Error(`Failed to get from ${entityName}: ${error.message}`);
     }
@@ -397,23 +441,33 @@ class MyDatabase extends EventEmitter {
    * Retrieves multiple entities.
    * @param entityName Entity name.
    * @param conditions Query conditions.
-   * @param options Pagination options.
    * @returns Array of entities.
    */
   find<T extends Record<string, any>>(
     entityName: string,
-    conditions: Partial<T> = {},
-    options: { limit?: number; offset?: number } = {}
+    conditions: Record<string, any> = {}
   ): T[] {
     try {
       if (!this.schemas[entityName]) throw new Error(`Unknown entity: ${entityName}`);
-      const whereClause = Object.keys(conditions).length
-        ? `WHERE ${Object.keys(conditions).map(key => `${key} = ?`).join(' AND ')}`
+      const { $limit, $offset, $sortBy, ...whereConditions } = conditions;
+
+      const whereClause = Object.keys(whereConditions).length
+        ? `WHERE ${Object.keys(whereConditions).map(key => `${key} = ?`).join(' AND ')}`
         : '';
-      const limitClause = options.limit ? `LIMIT ${options.limit}` : '';
-      const offsetClause = options.offset ? `OFFSET ${options.offset}` : '';
-      const sql = `SELECT * FROM ${entityName} ${whereClause} ${limitClause} ${offsetClause}`;
-      const rows = this.db.query(sql).all(...Object.values(conditions));
+
+      let orderByClause = '';
+      if ($sortBy) {
+        const [field, direction = 'ASC'] = ($sortBy as string).split(':');
+        if (this.getStorableFields(this.schemas[entityName]).some(f => f.name === field)) {
+          orderByClause = `ORDER BY ${field} ${direction.toUpperCase() === 'DESC' ? 'DESC' : 'ASC'}`;
+        }
+      }
+
+      const limitClause = $limit ? `LIMIT ${$limit}` : '';
+      const offsetClause = $offset ? `OFFSET ${$offset}` : '';
+
+      const sql = `SELECT * FROM ${entityName} ${whereClause} ${orderByClause} ${limitClause} ${offsetClause}`;
+      const rows = this.db.query(sql).all(...Object.values(whereConditions));
       return rows.map(row => {
         const entity = this.transformFromStorage(row, this.schemas[entityName]) as T;
         return this._attachMethods(entityName, entity);
@@ -474,8 +528,8 @@ class MyDatabase extends EventEmitter {
       const existing = hasId
         ? this.get(entityName, { id: data.id })
         : Object.keys(conditions).length
-        ? this.get(entityName, conditions)
-        : null;
+          ? this.get(entityName, conditions)
+          : null;
 
       if (existing) {
         const updateData = { ...data };
