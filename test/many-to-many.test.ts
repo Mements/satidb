@@ -16,7 +16,7 @@ const LikeSchema = z.object({
   product: z.lazy(() => ProductSchema).optional(),
 });
 
-describe('MyDatabase - Many-to-Many Relationships', () => {
+describe('SatiDB - Many-to-Many Relationships', () => {
   const db = new MyDatabase(':memory:', {
     users: UserSchema,
     products: ProductSchema,
@@ -33,12 +33,11 @@ describe('MyDatabase - Many-to-Many Relationships', () => {
     const keyboard = db.products.insert({ name: 'Keyboard' });
     console.log(`✅ Created products: ${laptop.name}, ${keyboard.name}`);
 
-    // 2. Create relationships using the fluent '.likes.insert' API
-    // Alice likes the Laptop
+    // 2. Create relationships using the fluent '.likes.push()' API.
+    // The library automatically creates the inverse relationship manager on the User and Product objects.
     const like1 = alice.likes.push({ productId: laptop.id });
-    // Bob likes the Laptop and the Keyboard
     const like2 = bob.likes.push({ productId: laptop.id });
-    const like3 = bob.likes.push({ productId: keyboard.id });
+    bob.likes.push({ productId: keyboard.id });
     console.log('✅ Created 3 likes');
 
     expect(like1.userId).toBe(alice.id);
@@ -46,7 +45,8 @@ describe('MyDatabase - Many-to-Many Relationships', () => {
 
     // 3. Query from the "product" side
     console.log(`\n🔍 Querying who liked "${laptop.name}"...`);
-    const laptopLikes = laptop.likes();
+    // Correct: Use .find() to query the collection
+    const laptopLikes = laptop.likes.find();
     expect(laptopLikes).toHaveLength(2);
 
     const usersWhoLikedLaptop = laptopLikes.map(l => l.user());
@@ -56,7 +56,8 @@ describe('MyDatabase - Many-to-Many Relationships', () => {
 
     // 4. Query from the "user" side
     console.log(`\n🔍 Querying what "${bob.name}" likes...`);
-    const bobLikes = bob.likes();
+    // Correct: Use .find() to query the collection
+    const bobLikes = bob.likes.find();
     expect(bobLikes).toHaveLength(2);
 
     const productsBobLiked = bobLikes.map(l => l.product());
@@ -65,7 +66,8 @@ describe('MyDatabase - Many-to-Many Relationships', () => {
     expect(productNames).toEqual(['Keyboard', 'Laptop']);
 
     // 5. Demonstrate filtering on relational queries
-  const singleProductBobLiked = bob.likes({ $limit: 1 });
+    // Correct: Pass conditions object to .find()
+    const singleProductBobLiked = bob.likes.find({ $limit: 1 });
     expect(singleProductBobLiked).toHaveLength(1);
     console.log(`\n✅ Successfully filtered user's likes with $limit.`);
 
