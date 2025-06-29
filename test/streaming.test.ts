@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { MyDatabase, z } from '../satidb';
+import { SatiDB, z } from '../satidb';
 
 // --- Schemas for LLM Test ---
 const PersonalitySchema = z.object({
@@ -23,7 +23,7 @@ const MessageSchema = z.object({
 
 describe('SatiDB - LLM Streaming Scenario', () => {
   // Use the generic `MyDatabase` type and provide the schemas
-  const db = new MyDatabase(':memory:', {
+  const db = new SatiDB(':memory:', {
     personalities: PersonalitySchema,
     chats: ChatSchema,
     messages: MessageSchema,

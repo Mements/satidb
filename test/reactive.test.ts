@@ -1,7 +1,7 @@
 // test/reactive.test.ts
 
 import { describe, it, expect } from 'bun:test';
-import { MyDatabase, z } from '../satidb';
+import { SatiDB, z } from '../satidb';
 
 const StudentSchema = z.object({
   name: z.string(),
@@ -17,7 +17,7 @@ const EnrollmentSchema = z.object({
 
 describe('SatiDB - Unified Core Showcase', () => {
   it('should demonstrate all core features in a single M-M scenario', () => {
-    const db = new MyDatabase(':memory:', {
+    const db = new SatiDB(':memory:', {
       students: StudentSchema,
       courses: CourseSchema,
       enrollments: EnrollmentSchema,
@@ -48,8 +48,7 @@ describe('SatiDB - Unified Core Showcase', () => {
 
     // 5. Query Through the Junction Table (Student -> Courses)
     console.log(`\n[Query] What courses is "${alice.name}" taking?`);
-    // CORRECTED LINE: Use .find() to query the collection
-    const aliceEnrollments = alice.enrollments.find();
+    const aliceEnrollments = alice.enrollments.find({ $limit: 2, $offset: 0, $sortBy: 'grade:desc' });
     const aliceCourses = aliceEnrollments.map(e => e.course());
     const courseTitles = aliceCourses.map(c => c.title).sort();
     console.log(` -> Courses: [${courseTitles.join(', ')}]`);
@@ -57,10 +56,9 @@ describe('SatiDB - Unified Core Showcase', () => {
 
     // 6. Query Through the Junction Table (Course -> Students)
     const bob = db.students.insert({ name: 'Bob' });
-    bob.enrollments.push({ courseId: math.id, grade: 'B+' });
+    bob.enrollments.push({ courseId: math.id, grade: 'A' });
     console.log(`\n[Query] Who is taking "${math.title}"?`);
-    // CORRECTED LINE: Use .find() here as well for consistency
-    const mathStudents = math.enrollments.find().map(e => e.student());
+    const mathStudents = math.enrollments.find({ grade: 'A' }).map(e => e.student());
     const studentNames = mathStudents.map(s => s.name).sort();
     console.log(` -> Students: [${studentNames.join(', ')}]`);
     expect(studentNames).toEqual(['Alice', 'Bob']);

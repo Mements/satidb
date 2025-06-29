@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { MyDatabase, z } from '../satidb';
+import { SatiDB, z } from '../satidb';
 
 // --- Schemas for Many-to-Many Test ---
 const UserSchema = z.object({
@@ -17,7 +17,7 @@ const LikeSchema = z.object({
 });
 
 describe('SatiDB - Many-to-Many Relationships', () => {
-  const db = new MyDatabase(':memory:', {
+  const db = new SatiDB(':memory:', {
     users: UserSchema,
     products: ProductSchema,
     likes: LikeSchema, // The junction table is an explicit entity
@@ -45,7 +45,6 @@ describe('SatiDB - Many-to-Many Relationships', () => {
 
     // 3. Query from the "product" side
     console.log(`\n🔍 Querying who liked "${laptop.name}"...`);
-    // Correct: Use .find() to query the collection
     const laptopLikes = laptop.likes.find();
     expect(laptopLikes).toHaveLength(2);
 
@@ -56,7 +55,6 @@ describe('SatiDB - Many-to-Many Relationships', () => {
 
     // 4. Query from the "user" side
     console.log(`\n🔍 Querying what "${bob.name}" likes...`);
-    // Correct: Use .find() to query the collection
     const bobLikes = bob.likes.find();
     expect(bobLikes).toHaveLength(2);
 
@@ -66,7 +64,6 @@ describe('SatiDB - Many-to-Many Relationships', () => {
     expect(productNames).toEqual(['Keyboard', 'Laptop']);
 
     // 5. Demonstrate filtering on relational queries
-    // Correct: Pass conditions object to .find()
     const singleProductBobLiked = bob.likes.find({ $limit: 1 });
     expect(singleProductBobLiked).toHaveLength(1);
     console.log(`\n✅ Successfully filtered user's likes with $limit.`);

@@ -61,7 +61,7 @@ type TypedAccessors<T extends SchemaMap> = {
 /**
  * A custom SQLite database wrapper with schema validation, relationships, and event handling.
  */
-class MyDatabase<Schemas extends SchemaMap> extends EventEmitter {
+class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   private db: Database;
   private schemas: Schemas;
   private relationships: Relationship[];
@@ -420,4 +420,4 @@ class MyDatabase<Schemas extends SchemaMap> extends EventEmitter {
 
 // To properly type the instance, we export a type that merges the class and the dynamic accessors
 export type DB<S extends SchemaMap> = MyDatabase<S> & TypedAccessors<S>;
-export { MyDatabase, z };
+export { SatiDB, z };
