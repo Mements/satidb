@@ -45,6 +45,7 @@ type OneToManyRelationship<S extends z.ZodObject<any>> = {
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id?: string) => void; // If no id provided, delete all related entities
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
+  push: (data: EntityData<S>) => AugmentedEntity<S>; // Alias for insert
 };
 
 // Type for a single entity accessor (e.g., db.students)
@@ -187,6 +188,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               }
             },
             subscribe: (event: any, callback: any) => this.subscribe(event, rel.to, callback),
+            push: (data: any) => this.insert(rel.to, { ...data, [foreignKeyInChild]: entity.id }),
           }),
         });
       } else if (rel.type === 'belongs-to') {
@@ -231,6 +233,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
                 }
               },
               subscribe: (event: any, callback: any) => this.subscribe(event, rel.from, callback),
+              push: (data: any) => this.insert(rel.from, { ...data, [foreignKeyInChild]: entity.id }),
             }),
           });
         }
@@ -313,22 +316,40 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     return transformed;
   }
 
-  private _attachMethods<T extends Record<string, any>>(entityName: string, entity: T): AugmentedEntity<any> {
+  private _attachMethods<T extends Record<string, any>>(entityName: string, entity: T, includedData?: Record<string, any>): AugmentedEntity<any> {
     const augmentedEntity = entity as any;
     augmentedEntity.update = (data: Partial<Omit<T, 'id'>>) => this.update(entityName, entity.id, data);
     augmentedEntity.delete = () => this.delete(entityName, entity.id);
 
     const lazyMethodDefs = this.lazyMethods[entityName] || [];
     for (const methodDef of lazyMethodDefs) {
-      const fetcher = methodDef.fetch(entity);
-      if (methodDef.type === 'one-to-many') {
-        augmentedEntity[methodDef.name] = fetcher; // Assigns the full CRUD manager
-        const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
-        const singularParentName = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
-        const foreignKey = `${singularParentName}Id`;
-        augmentedEntity[singularName] = (id: string) => this.get(methodDef.childEntityName!, { id, [foreignKey]: entity.id });
+      // Check if we have included data for this relationship
+      if (includedData && includedData[methodDef.name]) {
+        if (methodDef.type === 'belongs-to') {
+          // For belongs-to relationships, attach the included entity directly
+          augmentedEntity[methodDef.name] = () => includedData[methodDef.name];
+        } else {
+          // For one-to-many relationships, we still need the relationship manager
+          // but we can pre-populate it with included data if needed
+          const fetcher = methodDef.fetch(entity);
+          augmentedEntity[methodDef.name] = fetcher;
+          const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
+          const singularParentName = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
+          const foreignKey = `${singularParentName}Id`;
+          augmentedEntity[singularName] = (id: string) => this.get(methodDef.childEntityName!, { id, [foreignKey]: entity.id });
+        }
       } else {
-        augmentedEntity[methodDef.name] = fetcher; // Assigns the () => get(...) function
+        // Standard lazy loading behavior
+        const fetcher = methodDef.fetch(entity);
+        if (methodDef.type === 'one-to-many') {
+          augmentedEntity[methodDef.name] = fetcher; // Assigns the full CRUD manager
+          const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
+          const singularParentName = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
+          const foreignKey = `${singularParentName}Id`;
+          augmentedEntity[singularName] = (id: string) => this.get(methodDef.childEntityName!, { id, [foreignKey]: entity.id });
+        } else {
+          augmentedEntity[methodDef.name] = fetcher; // Assigns the () => get(...) function
+        }
       }
     }
 
@@ -345,6 +366,42 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     };
 
     return new Proxy(augmentedEntity, proxyHandler);
+  }
+
+  // Helper method to eagerly load included relationships
+  private loadIncludedData(entityName: string, entities: any[], includeFields: string[]): Record<string, any>[] {
+    if (!includeFields.length) return entities.map(() => ({}));
+
+    const includedDataArray: Record<string, any>[] = [];
+
+    for (const entity of entities) {
+      const includedData: Record<string, any> = {};
+
+      for (const includeField of includeFields) {
+        const relationship = this.relationships.find(
+          rel => rel.from === entityName && rel.relationshipField === includeField
+        );
+
+        if (relationship) {
+          if (relationship.type === 'belongs-to') {
+            const foreignKeyValue = entity[relationship.foreignKey];
+            if (foreignKeyValue) {
+              const relatedEntity = this.get(relationship.to, { id: foreignKeyValue });
+              includedData[includeField] = relatedEntity;
+            }
+          } else if (relationship.type === 'one-to-many') {
+            const singularParent = relationship.from.endsWith('s') ? relationship.from.slice(0, -1) : relationship.from;
+            const foreignKeyInChild = `${singularParent}Id`;
+            const relatedEntities = this.find(relationship.to, { [foreignKeyInChild]: entity.id });
+            includedData[includeField] = relatedEntities;
+          }
+        }
+      }
+
+      includedDataArray.push(includedData);
+    }
+
+    return includedDataArray;
   }
 
   public transaction<T>(callback: () => T): T {
@@ -389,7 +446,18 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   }
 
   private find<T extends Record<string, any>>(entityName: string, conditions: Record<string, any> = {}): AugmentedEntity<any>[] {
-    const { $limit, $offset, $sortBy, ...whereConditions } = conditions;
+    const { $limit, $offset, $sortBy, $include, ...whereConditions } = conditions;
+    
+    // Parse $include parameter
+    const includeFields: string[] = [];
+    if ($include) {
+      if (typeof $include === 'string') {
+        includeFields.push($include);
+      } else if (Array.isArray($include)) {
+        includeFields.push(...$include);
+      }
+    }
+
     const whereClause = Object.keys(whereConditions).length ? `WHERE ${Object.keys(whereConditions).map(key => `${key} = ?`).join(' AND ')}` : '';
     let orderByClause = '';
     if ($sortBy) {
@@ -400,9 +468,14 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     const offsetClause = $offset ? `OFFSET ${$offset}` : '';
     const sql = `SELECT * FROM ${entityName} ${whereClause} ${orderByClause} ${limitClause} ${offsetClause}`;
     const rows = this.db.query(sql).all(...Object.values(whereConditions));
-    return rows.map(row => {
-      const entity = this.transformFromStorage(row as any, this.schemas[entityName]) as T;
-      return this._attachMethods(entityName, entity);
+    
+    const entities = rows.map(row => this.transformFromStorage(row as any, this.schemas[entityName]) as T);
+    
+    // Load included data if specified
+    const includedDataArray = this.loadIncludedData(entityName, entities, includeFields);
+    
+    return entities.map((entity, index) => {
+      return this._attachMethods(entityName, entity, includedDataArray[index]);
     });
   }
 
@@ -433,7 +506,10 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       delete updateData.id;
       return this.update(entityName, existing.id, updateData) as AugmentedEntity<any>;
     } else {
-      return this.insert(entityName, data);
+      // Merge conditions into data for insert - this fixes the courseId issue
+      const insertData = { ...conditions, ...data };
+      delete insertData.id; // Remove id if it exists since insert generates its own
+      return this.insert(entityName, insertData);
     }
   }
 

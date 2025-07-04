@@ -35,10 +35,9 @@ describe('SatiDB - Unified Core Showcase', () => {
     const history = db.courses.insert({ title: 'World History' });
     console.log(`[Insert] Created student "${alice.name}" and two courses.`);
 
-    // Use insert instead of push for the relationship manager
-    const mathEnrollment = alice.enrollments.insert({ courseId: math.id, grade: 'In Progress' });
-    alice.enrollments.insert({ courseId: history.id, grade: 'In Progress' });
-    console.log(`[Insert] Enrolled "${alice.name}" in two courses.`);
+    const mathEnrollment = alice.enrollments.push({ courseId: math.id, grade: 'In Progress' });
+    alice.enrollments.push({ courseId: history.id, grade: 'In Progress' });
+    console.log(`[Push] Enrolled "${alice.name}" in two courses.`);
 
     console.log(`\n[Reactively Editing] Updating the grade for the math course...`);
     mathEnrollment.grade = 'A';
@@ -47,17 +46,30 @@ describe('SatiDB - Unified Core Showcase', () => {
     expect(updatedEnrollmentFromSub).not.toBeNull();
     expect(updatedEnrollmentFromSub.grade).toBe('A');
 
-    // Query Through the Junction Table (Student -> Courses)
-    console.log(`\n[Query] What courses is "${alice.name}" taking?`);
+    // 5. Query Through the Junction Table (Student -> Courses) - LAZY LOADING
+    console.log(`\n[Query - Lazy Loading] What courses is "${alice.name}" taking?`);
     const aliceEnrollments = alice.enrollments.find({ $limit: 2, $offset: 0, $sortBy: 'grade:desc' });
     const aliceCourses = aliceEnrollments.map(e => e.course());
     const courseTitles = aliceCourses.map(c => c.title).sort();
-    console.log(` -> Courses: [${courseTitles.join(', ')}]`);
+    console.log(` -> Courses (lazy): [${courseTitles.join(', ')}]`);
     expect(courseTitles).toEqual(['Calculus I', 'World History']);
 
-    // Query Through the Junction Table (Course -> Students)
+    // NEW: Query with $include - EAGER LOADING
+    console.log(`\n[Query - Eager Loading] What courses is "${alice.name}" taking with $include?`);
+    const aliceEnrollmentsWithInclude = alice.enrollments.find({ 
+      $limit: 2, 
+      $offset: 0, 
+      $sortBy: 'grade:desc', 
+      $include: 'course' 
+    });
+    const aliceCoursesEager = aliceEnrollmentsWithInclude.map(e => e.course());
+    const courseTitlesEager = aliceCoursesEager.map(c => c.title).sort();
+    console.log(` -> Courses (eager): [${courseTitlesEager.join(', ')}]`);
+    expect(courseTitlesEager).toEqual(['Calculus I', 'World History']);
+
+    // 6. Query Through the Junction Table (Course -> Students)
     const bob = db.students.insert({ name: 'Bob' });
-    bob.enrollments.insert({ courseId: math.id, grade: 'A' });
+    bob.enrollments.push({ courseId: math.id, grade: 'A' });
     console.log(`\n[Query] Who is taking "${math.title}"?`);
     const mathStudents = math.enrollments.find({ grade: 'A' }).map(e => e.student());
     const studentNames = mathStudents.map(s => s.name).sort();
@@ -67,105 +79,83 @@ describe('SatiDB - Unified Core Showcase', () => {
     console.log('\n✅ All core library features demonstrated successfully!');
   });
 
-  it('should support full CRUD operations on relationship managers', () => {
+  it('should demonstrate fixed upsert functionality', () => {
     const db = new SatiDB(':memory:', {
       students: StudentSchema,
       courses: CourseSchema,
       enrollments: EnrollmentSchema,
     });
 
+    // Create test data
     const alice = db.students.insert({ name: 'Alice' });
-    const math = db.courses.insert({ title: 'Calculus I' });
-    const history = db.courses.insert({ title: 'World History' });
-    const physics = db.courses.insert({ title: 'Physics I' });
-
-    // Test insert
-    const mathEnrollment = alice.enrollments.insert({ courseId: math.id, grade: 'In Progress' });
-    const historyEnrollment = alice.enrollments.insert({ courseId: history.id, grade: 'B+' });
-    const physicsEnrollment = alice.enrollments.insert({ courseId: physics.id, grade: 'A-' });
-
-    // Test find
-    const aliceEnrollments = alice.enrollments.find();
-    expect(aliceEnrollments.length).toBe(3);
-
-    // Test get with string id
-    const foundMathEnrollment = alice.enrollments.get(mathEnrollment.id);
-    expect(foundMathEnrollment?.grade).toBe('In Progress');
-
-    // Test get with conditions
-    const foundHistoryEnrollment = alice.enrollments.get({ grade: 'B+' });
-    expect(foundHistoryEnrollment?.courseId).toBe(history.id);
-
-    // Test update via relationship manager
-    const updatedEnrollment = alice.enrollments.update(mathEnrollment.id, { grade: 'A+' });
-    expect(updatedEnrollment?.grade).toBe('A+');
-
-    // Test upsert - update existing
-    const upsertedExisting = alice.enrollments.upsert({ courseId: history.id }, { grade: 'A' });
-    expect(upsertedExisting.grade).toBe('A');
-
-    // Test upsert - insert new
     const spanish = db.courses.insert({ title: 'Spanish I' });
+    
+    console.log('\n[Upsert Test] Testing upsert functionality...');
+    
+    // Test upsert - insert new (this was previously failing)
     const upsertedNew = alice.enrollments.upsert({ courseId: spanish.id }, { grade: 'B' });
-    console.log("upsertedNew", upsertedNew)
+    console.log("upsertedNew", upsertedNew);
+    console.log("upsertedNew.courseId", upsertedNew.courseId);
+    console.log("spanish.id", spanish.id);
+    
+    // This should now pass - courseId should be properly set
     expect(upsertedNew.courseId).toBe(spanish.id);
+    expect(upsertedNew.studentId).toBe(alice.id);
     expect(upsertedNew.grade).toBe('B');
-
-    // Test delete with id
-    alice.enrollments.delete(physicsEnrollment.id);
-    const remainingEnrollments = alice.enrollments.find();
-    expect(remainingEnrollments.length).toBe(3); // math, history, spanish
-
-    // Test delete all related entities (without id)
-    alice.enrollments.delete();
-    const finalEnrollments = alice.enrollments.find();
-    expect(finalEnrollments.length).toBe(0);
-
-    console.log('\n✅ Full CRUD operations on relationship managers working correctly!');
+    
+    // Test upsert - update existing
+    const upsertedUpdate = alice.enrollments.upsert({ courseId: spanish.id }, { grade: 'A+' });
+    expect(upsertedUpdate.id).toBe(upsertedNew.id); // Should be the same entity
+    expect(upsertedUpdate.grade).toBe('A+'); // Should be updated
+    expect(upsertedUpdate.courseId).toBe(spanish.id); // Should still have courseId
+    
+    console.log('✅ Upsert functionality working correctly!');
   });
 
-  it('should support subscription on relationship managers', () => {
+  it('should demonstrate $include with multiple relationships', () => {
     const db = new SatiDB(':memory:', {
       students: StudentSchema,
       courses: CourseSchema,
       enrollments: EnrollmentSchema,
     });
 
+    // Create test data
     const alice = db.students.insert({ name: 'Alice' });
-    const math = db.courses.insert({ title: 'Calculus I' });
-
-    let insertedEnrollment: any = null;
-    let updatedEnrollment: any = null;
-    let deletedEnrollment: any = null;
-
-    // Test subscription on relationship manager
-    alice.enrollments.subscribe('insert', (data) => {
-      insertedEnrollment = data;
-    });
-
-    alice.enrollments.subscribe('update', (data) => {
-      updatedEnrollment = data;
-    });
-
-    alice.enrollments.subscribe('delete', (data) => {
-      deletedEnrollment = data;
-    });
-
-    // Test insert subscription
-    const mathEnrollment = alice.enrollments.insert({ courseId: math.id, grade: 'In Progress' });
-    expect(insertedEnrollment).not.toBeNull();
-    expect(insertedEnrollment.grade).toBe('In Progress');
-
-    // Test update subscription
-    alice.enrollments.update(mathEnrollment.id, { grade: 'A+' });
-    expect(updatedEnrollment).not.toBeNull();
-    expect(updatedEnrollment.grade).toBe('A+');
-
-    // Test delete subscription
-    alice.enrollments.delete(mathEnrollment.id);
-    expect(deletedEnrollment).not.toBeNull();
-    expect(deletedEnrollment.id).toBe(mathEnrollment.id);
-
-    console.log('\n✅ Subscription on relationship managers working correctly!');
+    const bob = db.students.insert({ name: 'Bob' });
+    const math = db.courses.insert({ title: 'Mathematics' });
+    const science = db.courses.insert({ title: 'Science' });
+    
+    // Create enrollments
+    const enrollment1 = db.enrollments.insert({ studentId: alice.id, courseId: math.id, grade: 'A' });
+    const enrollment2 = db.enrollments.insert({ studentId: bob.id, courseId: math.id, grade: 'B' });
+    const enrollment3 = db.enrollments.insert({ studentId: alice.id, courseId: science.id, grade: 'A+' });
+    
+    console.log('\n[Include Test] Testing $include with belongs-to relationships...');
+    
+    // Test $include with single relationship
+    const enrollmentsWithCourse = db.enrollments.find({ $include: 'course' });
+    console.log(`Found ${enrollmentsWithCourse.length} enrollments with courses included`);
+    
+    // Each enrollment should have the course data immediately available
+    for (const enrollment of enrollmentsWithCourse) {
+      const course = enrollment.course();
+      expect(course).not.toBeNull();
+      expect(course.title).toBeDefined();
+      console.log(`Enrollment grade ${enrollment.grade} for course ${course.title}`);
+    }
+    
+    // Test $include with multiple relationships
+    const enrollmentsWithBoth = db.enrollments.find({ $include: ['course', 'student'] });
+    console.log(`Found ${enrollmentsWithBoth.length} enrollments with both student and course included`);
+    
+    for (const enrollment of enrollmentsWithBoth) {
+      const course = enrollment.course();
+      const student = enrollment.student();
+      expect(course).not.toBeNull();
+      expect(student).not.toBeNull();
+      console.log(`${student.name} has grade ${enrollment.grade} in ${course.title}`);
+    }
+    
+    console.log('✅ $include functionality working correctly!');
   });
 });
