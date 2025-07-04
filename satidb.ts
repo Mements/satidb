@@ -38,8 +38,13 @@ type AugmentedEntity<S extends z.ZodObject<any>> = InferSchema<S> & {
 
 // Type for a one-to-many relationship manager (e.g., student.enrollments)
 type OneToManyRelationship<S extends z.ZodObject<any>> = {
+  insert: (data: EntityData<S>) => AugmentedEntity<S>;
+  get: (conditions: string | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
-  push: (data: EntityData<S>) => AugmentedEntity<S>;
+  update: (id: string, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
+  upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
+  delete: (id?: string) => void; // If no id provided, delete all related entities
+  subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
 };
 
 // Type for a single entity accessor (e.g., db.students)
@@ -48,7 +53,7 @@ type EntityAccessor<S extends z.ZodObject<any>> = {
   get: (conditions: string | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: (id: string, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
-  upsert: (data: Partial<InferSchema<S>>, conditions?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
+  upsert: (conditions?: Partial<InferSchema<S>>, data: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id: string) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
 };
@@ -86,7 +91,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         get: (conditions) => this.get(entityName, conditions),
         find: (conditions) => this.find(entityName, conditions),
         update: (id, data) => this.update(entityName, id, data),
-        upsert: (data, conditions) => this.upsert(entityName, data, conditions),
+        upsert: (conditions, data) => this.upsert(entityName, data, conditions),
         delete: (id) => this.delete(entityName, id),
         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
       };
@@ -164,8 +169,24 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
           childEntityName: rel.to,
           parentEntityName: rel.from,
           fetch: (entity) => ({
+            insert: (data: any) => this.insert(rel.to, { ...data, [foreignKeyInChild]: entity.id }),
+            get: (conditions: any) => {
+              const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+              return this.get(rel.to, { ...queryConditions, [foreignKeyInChild]: entity.id });
+            },
             find: (conditions: any = {}) => this.find(rel.to, { ...conditions, [foreignKeyInChild]: entity.id }),
-            push: (data: any) => this.insert(rel.to, { ...data, [foreignKeyInChild]: entity.id }),
+            update: (id: string, data: any) => this.update(rel.to, id, data),
+            upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.to, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
+            delete: (id?: string) => {
+              if (id) {
+                this.delete(rel.to, id);
+              } else {
+                // Delete all related entities
+                const relatedEntities = this.find(rel.to, { [foreignKeyInChild]: entity.id });
+                relatedEntities.forEach(e => this.delete(rel.to, e.id));
+              }
+            },
+            subscribe: (event: any, callback: any) => this.subscribe(event, rel.to, callback),
           }),
         });
       } else if (rel.type === 'belongs-to') {
@@ -192,8 +213,24 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
             childEntityName: rel.from,
             parentEntityName: rel.to,
             fetch: (entity) => ({
+              insert: (data: any) => this.insert(rel.from, { ...data, [foreignKeyInChild]: entity.id }),
+              get: (conditions: any) => {
+                const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+                return this.get(rel.from, { ...queryConditions, [foreignKeyInChild]: entity.id });
+              },
               find: (conditions: any = {}) => this.find(rel.from, { ...conditions, [foreignKeyInChild]: entity.id }),
-              push: (data: any) => this.insert(rel.from, { ...data, [foreignKeyInChild]: entity.id }),
+              update: (id: string, data: any) => this.update(rel.from, id, data),
+              upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.from, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
+              delete: (id?: string) => {
+                if (id) {
+                  this.delete(rel.from, id);
+                } else {
+                  // Delete all related entities
+                  const relatedEntities = this.find(rel.from, { [foreignKeyInChild]: entity.id });
+                  relatedEntities.forEach(e => this.delete(rel.from, e.id));
+                }
+              },
+              subscribe: (event: any, callback: any) => this.subscribe(event, rel.from, callback),
             }),
           });
         }
@@ -285,7 +322,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     for (const methodDef of lazyMethodDefs) {
       const fetcher = methodDef.fetch(entity);
       if (methodDef.type === 'one-to-many') {
-        augmentedEntity[methodDef.name] = fetcher; // Assigns the { find, push } manager
+        augmentedEntity[methodDef.name] = fetcher; // Assigns the full CRUD manager
         const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
         const singularParentName = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
         const foreignKey = `${singularParentName}Id`;
@@ -419,5 +456,5 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
 }
 
 // To properly type the instance, we export a type that merges the class and the dynamic accessors
-export type DB<S extends SchemaMap> = MyDatabase<S> & TypedAccessors<S>;
+export type DB<S extends SchemaMap> = SatiDB<S> & TypedAccessors<S>;
 export { SatiDB, z };
