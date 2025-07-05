@@ -251,7 +251,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         rel => rel.type === 'belongs-to' && rel.from === entityName
       );
       for (const rel of belongsToRels) {
-        columns.push(`${rel.foreignKey} TEXT REFERENCES ${rel.to}(id)`);
+        columns.push(`${rel.foreignKey} TEXT REFERENCES ${rel.to}(id) ON DELETE SET NULL`);
       }
 
       const createTableSql = `CREATE TABLE IF NOT EXISTS ${entityName} (id TEXT PRIMARY KEY, ${columns.join(', ')})`;

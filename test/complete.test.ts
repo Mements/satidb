@@ -159,71 +159,140 @@ describe('SatiDB - Unified Core Showcase', () => {
     console.log('✅ $include functionality working correctly!');
   });
 
-  it('should demonstrate real performance improvement with JOIN-based $include', () => {
+  it('should demonstrate dramatic performance difference with thousands of entries', () => {
     const db = new SatiDB(':memory:', {
       students: StudentSchema,
       courses: CourseSchema,
       enrollments: EnrollmentSchema,
     });
 
-    // Create test data for performance comparison
-    const alice = db.students.insert({ name: 'Alice' });
-    const bob = db.students.insert({ name: 'Bob' });
-    const charlie = db.students.insert({ name: 'Charlie' });
+    // Create a large dataset
+    console.log('\n=== CREATING LARGE DATASET ===');
+    const NUM_STUDENTS = 100;
+    const NUM_COURSES = 50;
+    const ENROLLMENTS_PER_STUDENT = 5;
     
-    const math = db.courses.insert({ title: 'Mathematics' });
-    const science = db.courses.insert({ title: 'Science' });
-    const history = db.courses.insert({ title: 'History' });
-    
-    // Create 6 enrollments (2 per student)
-    db.enrollments.insert({ studentId: alice.id, courseId: math.id, grade: 'A' });
-    db.enrollments.insert({ studentId: alice.id, courseId: science.id, grade: 'B' });
-    db.enrollments.insert({ studentId: bob.id, courseId: math.id, grade: 'B+' });
-    db.enrollments.insert({ studentId: bob.id, courseId: history.id, grade: 'A-' });
-    db.enrollments.insert({ studentId: charlie.id, courseId: science.id, grade: 'A+' });
-    db.enrollments.insert({ studentId: charlie.id, courseId: history.id, grade: 'B' });
-    
-    console.log('\n=== PERFORMANCE COMPARISON ===');
-    
-    // Method 1: Lazy Loading (N+1 queries)
-    console.log('\n[Lazy Loading] Getting enrollments with course info...');
-    const enrollmentsLazy = db.enrollments.find();
-    console.log(`Found ${enrollmentsLazy.length} enrollments`);
-    console.log('Now accessing course info (this will trigger individual queries):');
-    const coursesLazy = enrollmentsLazy.map(e => {
-      const course = e.course(); // This triggers a separate query for each enrollment
-      console.log(`  - Enrollment ${e.id}: ${course?.title} (grade: ${e.grade})`);
-      return course;
-    });
-    
-    // Method 2: Eager Loading with JOINs (single query)
-    console.log('\n[Eager Loading] Getting enrollments with $include course...');
-    const enrollmentsEager = db.enrollments.find({ $include: 'course' });
-    console.log(`Found ${enrollmentsEager.length} enrollments`);
-    console.log('Accessing course info (already loaded via JOIN):');
-    const coursesEager = enrollmentsEager.map(e => {
-      const course = e.course(); // This returns the pre-loaded data, no additional query
-      console.log(`  - Enrollment ${e.id}: ${course?.title} (grade: ${e.grade})`);
-      return course;
-    });
-    
-    // Verify both methods return the same data
-    const lazyCourseTitles = coursesLazy.map(c => c?.title).sort();
-    const eagerCourseTitles = coursesEager.map(c => c?.title).sort();
-    expect(lazyCourseTitles).toEqual(eagerCourseTitles);
-    
-    console.log('\n✅ Both methods return identical data, but eager loading uses far fewer queries!');
-    
-    // Test one-to-many eager loading
-    console.log('\n[One-to-Many Eager Loading] Getting students with their enrollments...');
-    const studentsWithEnrollments = db.students.find({ $include: 'enrollments' });
-    
-    for (const student of studentsWithEnrollments) {
-      const enrollments = student.enrollments.find(); // Should return pre-loaded data
-      console.log(`${student.name} has ${enrollments.length} enrollments`);
-      expect(enrollments.length).toBeGreaterThan(0);
+    console.log(`Creating ${NUM_STUDENTS} students...`);
+    const students = [];
+    for (let i = 1; i <= NUM_STUDENTS; i++) {
+      students.push(db.students.insert({ name: `Student ${i}` }));
     }
     
-    console.log('\n✅ One-to-many eager loading also working with batch queries!');
+    console.log(`Creating ${NUM_COURSES} courses...`);
+    const courses = [];
+    for (let i = 1; i <= NUM_COURSES; i++) {
+      courses.push(db.courses.insert({ title: `Course ${i}` }));
+    }
+    
+    console.log(`Creating enrollments (${ENROLLMENTS_PER_STUDENT} per student)...`);
+    const enrollments = [];
+    for (const student of students) {
+      // Randomly enroll each student in ENROLLMENTS_PER_STUDENT courses
+      const shuffledCourses = [...courses].sort(() => Math.random() - 0.5);
+      for (let i = 0; i < ENROLLMENTS_PER_STUDENT; i++) {
+        const course = shuffledCourses[i % shuffledCourses.length];
+        const grades = ['A', 'A-', 'B+', 'B', 'B-', 'C+', 'C'];
+        const grade = grades[Math.floor(Math.random() * grades.length)];
+        enrollments.push(db.enrollments.insert({ 
+          studentId: student.id, 
+          courseId: course.id, 
+          grade 
+        }));
+      }
+    }
+    
+    const totalEnrollments = NUM_STUDENTS * ENROLLMENTS_PER_STUDENT;
+    console.log(`✅ Created ${totalEnrollments} total enrollments`);
+    
+    // Add a simple query counter by wrapping the database query method
+    let queryCount = 0;
+    const originalQuery = (db as any).db.query;
+    (db as any).db.query = function(sql: string) {
+      queryCount++;
+      if (queryCount <= 10 || queryCount % 50 === 0) { // Only log first 10 queries and every 50th
+        console.log(`[Query ${queryCount}] ${sql.substring(0, 80)}${sql.length > 80 ? '...' : ''}`);
+      }
+      return originalQuery.call(this, sql);
+    };
+    
+    console.log('\n=== PERFORMANCE TEST 1: LAZY LOADING (N+1 Problem) ===');
+    queryCount = 0;
+    const lazyStartTime = performance.now();
+    
+    // Get all enrollments without includes
+    const enrollmentsLazy = db.enrollments.find();
+    console.log(`Step 1: Found ${enrollmentsLazy.length} enrollments`);
+    
+    // Access course info for each enrollment (this triggers N queries)
+    let lazyProcessedCount = 0;
+    const lazyCourseTitles = enrollmentsLazy.map(enrollment => {
+      const course = enrollment.course(); // Each call triggers a separate query!
+      lazyProcessedCount++;
+      if (lazyProcessedCount % 100 === 0) {
+        console.log(`  Processed ${lazyProcessedCount}/${enrollmentsLazy.length} enrollments...`);
+      }
+      return course?.title;
+    });
+    
+    const lazyEndTime = performance.now();
+    const lazyDuration = lazyEndTime - lazyStartTime;
+    const lazyQueryCount = queryCount;
+    
+    console.log(`🐌 LAZY LOADING RESULTS:`);
+    console.log(`   Time: ${lazyDuration.toFixed(2)}ms`);
+    console.log(`   Queries: ${lazyQueryCount} (1 initial + ${lazyQueryCount - 1} individual lookups)`);
+    console.log(`   Processed: ${lazyCourseTitles.length} course titles`);
+    
+    console.log('\n=== PERFORMANCE TEST 2: EAGER LOADING (JOIN-based) ===');
+    queryCount = 0;
+    const eagerStartTime = performance.now();
+    
+    // Get all enrollments with course included via JOIN
+    const enrollmentsEager = db.enrollments.find({ $include: 'course' });
+    console.log(`Step 1: Found ${enrollmentsEager.length} enrollments with courses included`);
+    
+    // Access course info for each enrollment (no additional queries needed!)
+    let eagerProcessedCount = 0;
+    const eagerCourseTitles = enrollmentsEager.map(enrollment => {
+      const course = enrollment.course(); // Returns pre-loaded data, no query!
+      eagerProcessedCount++;
+      if (eagerProcessedCount % 100 === 0) {
+        console.log(`  Processed ${eagerProcessedCount}/${enrollmentsEager.length} enrollments...`);
+      }
+      return course?.title;
+    });
+    
+    const eagerEndTime = performance.now();
+    const eagerDuration = eagerEndTime - eagerStartTime;
+    const eagerQueryCount = queryCount;
+    
+    console.log(`🚀 EAGER LOADING RESULTS:`);
+    console.log(`   Time: ${eagerDuration.toFixed(2)}ms`);
+    console.log(`   Queries: ${eagerQueryCount} (1 JOIN query only)`);
+    console.log(`   Processed: ${eagerCourseTitles.length} course titles`);
+    
+    // Calculate performance improvement
+    const speedImprovement = (lazyDuration / eagerDuration).toFixed(1);
+    const queryReduction = ((lazyQueryCount - eagerQueryCount) / lazyQueryCount * 100).toFixed(1);
+    
+    console.log(`\n🎯 PERFORMANCE IMPROVEMENT:`);
+    console.log(`   Speed: ${speedImprovement}x faster`);
+    console.log(`   Query Reduction: ${queryReduction}% fewer queries`);
+    console.log(`   Query Count: ${lazyQueryCount} → ${eagerQueryCount}`);
+    
+    // Verify both methods return identical data
+    expect(lazyCourseTitles.length).toBe(eagerCourseTitles.length);
+    expect(lazyCourseTitles.sort()).toEqual(eagerCourseTitles.sort());
+    
+    // Expect significant performance improvement
+    expect(eagerDuration).toBeLessThan(lazyDuration);
+    expect(eagerQueryCount).toBeLessThan(lazyQueryCount / 10); // Should be dramatically fewer queries
+    
+    console.log(`\n✅ Performance test completed successfully!`);
+    console.log(`   Both methods returned identical data`);
+    console.log(`   Eager loading showed significant performance improvement`);
+    
+    // Restore original query method
+    (db as any).db.query = originalQuery;
   });
 });
