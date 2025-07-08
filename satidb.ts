@@ -25,33 +25,30 @@ type LazyMethod<T = any, R = any> = {
 // --- Type Helpers for Stronger Safety ---
 type InferSchema<S extends z.ZodObject<any>> = z.infer<S>;
 
-// Type for data used in `insert` or `upsert` calls (schema shape minus generated ID)
 type EntityData<S extends z.ZodObject<any>> = Omit<InferSchema<S>, 'id'>;
 
-// Type for the object returned from the database, including its methods
 type AugmentedEntity<S extends z.ZodObject<any>> = InferSchema<S> & {
   update: (data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
   delete: () => void;
-  // Dynamic relationship fields are added at runtime.
   [key: string]: any;
 };
 
-// Type for a one-to-many relationship manager (e.g., student.enrollments)
 type OneToManyRelationship<S extends z.ZodObject<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
   get: (conditions: string | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
+  findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: (id: string, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
-  delete: (id?: string) => void; // If no id provided, delete all related entities
+  delete: (id?: string) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
-  push: (data: EntityData<S>) => AugmentedEntity<S>; // Alias for insert
+  push: (data: EntityData<S>) => AugmentedEntity<S>;
 };
 
-// Type for a single entity accessor (e.g., db.students)
 type EntityAccessor<S extends z.ZodObject<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
   get: (conditions: string | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
+  findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: (id: string, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
   upsert: (conditions?: Partial<InferSchema<S>>, data: Partial<InferSchema<S>>) => AugmentedEntity<S>;
@@ -59,7 +56,6 @@ type EntityAccessor<S extends z.ZodObject<any>> = {
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
 };
 
-// This will be the main, typed entry point for all database operations
 type TypedAccessors<T extends SchemaMap> = {
   [K in keyof T]: EntityAccessor<T[K]>;
 };
@@ -83,20 +79,19 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     this.relationships = this.parseRelationships(schemas);
     this.lazyMethods = this.buildLazyMethods();
     this.initializeTables();
-    
-    // Build and merge the type-safe accessors directly onto the instance
+
     Object.keys(schemas).forEach(entityName => {
       const key = entityName as keyof Schemas;
       const accessor: EntityAccessor<Schemas[typeof key]> = {
         insert: (data) => this.insert(entityName, data),
         get: (conditions) => this.get(entityName, conditions),
+        findOne: (conditions) => this.findOne(entityName, conditions),
         find: (conditions) => this.find(entityName, conditions),
         update: (id, data) => this.update(entityName, id, data),
         upsert: (conditions, data) => this.upsert(entityName, data, conditions),
         delete: (id) => this.delete(entityName, id),
         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
       };
-      // Dynamically assign the accessor to `this`
       (this as any)[key] = accessor;
     });
   }
@@ -139,13 +134,13 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
             );
             if (targetEntityName) {
               const singularTarget = targetEntityName.endsWith('s') ? targetEntityName.slice(0, -1) : targetEntityName;
-              const foreignKey = `${singularTarget}Id`;
+              const foreignKey = relType === 'belongs-to' ? `${singularTarget}Id` : '';
               relationships.push({
                 type: relType,
                 from: entityName,
                 to: targetEntityName,
                 relationshipField: fieldName,
-                foreignKey: relType === 'belongs-to' ? foreignKey : '',
+                foreignKey,
               });
             }
           }
@@ -175,6 +170,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
               return this.get(rel.to, { ...queryConditions, [foreignKeyInChild]: entity.id });
             },
+            findOne: (conditions: any) => this.findOne(rel.to, { ...conditions, [foreignKeyInChild]: entity.id }),
             find: (conditions: any = {}) => this.find(rel.to, { ...conditions, [foreignKeyInChild]: entity.id }),
             update: (id: string, data: any) => this.update(rel.to, id, data),
             upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.to, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
@@ -182,7 +178,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               if (id) {
                 this.delete(rel.to, id);
               } else {
-                // Delete all related entities
                 const relatedEntities = this.find(rel.to, { [foreignKeyInChild]: entity.id });
                 relatedEntities.forEach(e => this.delete(rel.to, e.id));
               }
@@ -220,6 +215,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
                 const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
                 return this.get(rel.from, { ...queryConditions, [foreignKeyInChild]: entity.id });
               },
+              findOne: (conditions: any) => this.findOne(rel.from, { ...conditions, [foreignKeyInChild]: entity.id }),
               find: (conditions: any = {}) => this.find(rel.from, { ...conditions, [foreignKeyInChild]: entity.id }),
               update: (id: string, data: any) => this.update(rel.from, id, data),
               upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.from, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
@@ -227,7 +223,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
                 if (id) {
                   this.delete(rel.from, id);
                 } else {
-                  // Delete all related entities
                   const relatedEntities = this.find(rel.from, { [foreignKeyInChild]: entity.id });
                   relatedEntities.forEach(e => this.delete(rel.from, e.id));
                 }
@@ -245,16 +240,21 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   private initializeTables(): void {
     for (const [entityName, schema] of Object.entries(this.schemas)) {
       const storableFields = this.getStorableFields(schema);
-      let columns = storableFields.map(f => `${f.name} ${this.zodTypeToSqlType(f.type)}`);
+      const storableFieldNames = new Set(storableFields.map(f => f.name));
+      let columnDefs = storableFields.map(f => `${f.name} ${this.zodTypeToSqlType(f.type)}`);
+      let constraints = [];
 
       const belongsToRels = this.relationships.filter(
         rel => rel.type === 'belongs-to' && rel.from === entityName
       );
       for (const rel of belongsToRels) {
-        columns.push(`${rel.foreignKey} TEXT REFERENCES ${rel.to}(id) ON DELETE SET NULL`);
+        if (!storableFieldNames.has(rel.foreignKey)) {
+          columnDefs.push(`${rel.foreignKey} TEXT`);
+        }
+        constraints.push(`FOREIGN KEY (${rel.foreignKey}) REFERENCES ${rel.to}(id) ON DELETE SET NULL`);
       }
 
-      const createTableSql = `CREATE TABLE IF NOT EXISTS ${entityName} (id TEXT PRIMARY KEY, ${columns.join(', ')})`;
+      const createTableSql = `CREATE TABLE IF NOT EXISTS ${entityName} (id TEXT PRIMARY KEY, ${columnDefs.join(', ')}${constraints.length > 0 ? ', ' + constraints.join(', ') : ''})`;
       this.db.run(createTableSql);
     }
   }
@@ -323,30 +323,28 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
 
     const lazyMethodDefs = this.lazyMethods[entityName] || [];
     for (const methodDef of lazyMethodDefs) {
-      // Check if we have included data for this relationship
       if (includedData && includedData[methodDef.name] !== undefined) {
         if (methodDef.type === 'belongs-to') {
-          // For belongs-to relationships, attach the included entity directly
           const includedEntity = includedData[methodDef.name];
           augmentedEntity[methodDef.name] = () => includedEntity;
         } else if (methodDef.type === 'one-to-many') {
-          // For one-to-many relationships, create a manager that uses included data for find()
           const includedEntities = includedData[methodDef.name] || [];
           const singularParent = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
           const foreignKeyInChild = `${singularParent}Id`;
-          
+
           augmentedEntity[methodDef.name] = {
             insert: (data: any) => this.insert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }),
             get: (conditions: any) => {
               const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
               return this.get(methodDef.childEntityName!, { ...queryConditions, [foreignKeyInChild]: entity.id });
             },
+            findOne: (conditions: any = {}) => {
+              return this.findOne(methodDef.childEntityName!, { ...conditions, [foreignKeyInChild]: entity.id });
+            },
             find: (conditions: any = {}) => {
-              // If no specific conditions and we have included data, return it
               if (Object.keys(conditions).length === 0) {
                 return includedEntities;
               }
-              // Otherwise, fall back to database query
               return this.find(methodDef.childEntityName!, { ...conditions, [foreignKeyInChild]: entity.id });
             },
             update: (id: string, data: any) => this.update(methodDef.childEntityName!, id, data),
@@ -355,7 +353,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               if (id) {
                 this.delete(methodDef.childEntityName!, id);
               } else {
-                // Delete all related entities
                 const relatedEntities = this.find(methodDef.childEntityName!, { [foreignKeyInChild]: entity.id });
                 relatedEntities.forEach(e => this.delete(methodDef.childEntityName!, e.id));
               }
@@ -363,21 +360,20 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
             subscribe: (event: any, callback: any) => this.subscribe(event, methodDef.childEntityName!, callback),
             push: (data: any) => this.insert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }),
           };
-          
+
           const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
           augmentedEntity[singularName] = (id: string) => this.get(methodDef.childEntityName!, { id, [foreignKeyInChild]: entity.id });
         }
       } else {
-        // Standard lazy loading behavior
         const fetcher = methodDef.fetch(entity);
         if (methodDef.type === 'one-to-many') {
-          augmentedEntity[methodDef.name] = fetcher; // Assigns the full CRUD manager
+          augmentedEntity[methodDef.name] = fetcher;
           const singularName = methodDef.childEntityName!.endsWith('s') ? methodDef.childEntityName!.slice(0, -1) : methodDef.childEntityName!;
           const singularParentName = methodDef.parentEntityName!.endsWith('s') ? methodDef.parentEntityName!.slice(0, -1) : methodDef.parentEntityName!;
           const foreignKey = `${singularParentName}Id`;
           augmentedEntity[singularName] = (id: string) => this.get(methodDef.childEntityName!, { id, [foreignKey]: entity.id });
         } else {
-          augmentedEntity[methodDef.name] = fetcher; // Assigns the () => get(...) function
+          augmentedEntity[methodDef.name] = fetcher;
         }
       }
     }
@@ -397,19 +393,68 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     return new Proxy(augmentedEntity, proxyHandler);
   }
 
-  // Helper method to build JOIN queries for included relationships
+  private buildWhereClause(conditions: Record<string, any>, tablePrefix?: string): { clause: string; values: any[] } {
+    const whereParts: string[] = [];
+    const values: any[] = [];
+
+    for (const key in conditions) {
+      if (key.startsWith('$')) continue;
+
+      const value = conditions[key];
+      const fieldName = tablePrefix ? `${tablePrefix}.${key}` : key;
+
+      if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+        const operator = Object.keys(value)[0];
+        if (!operator || !operator.startsWith('$')) {
+          throw new Error(`Querying on nested object field '${key}' is not supported. Use simple values or query operators like $gt.`);
+        }
+
+        const operand = value[operator];
+        let sqlOperator = '';
+        switch (operator) {
+          case '$gt': sqlOperator = '>'; break;
+          case '$gte': sqlOperator = '>='; break;
+          case '$lt': sqlOperator = '<'; break;
+          case '$lte': sqlOperator = '<='; break;
+          case '$ne': sqlOperator = '!='; break;
+          case '$in':
+            if (!Array.isArray(operand)) throw new Error(`$in operator for field '${key}' requires an array value.`);
+            if (operand.length === 0) {
+              whereParts.push('1 = 0');
+            } else {
+              const placeholders = operand.map(() => '?').join(', ');
+              whereParts.push(`${fieldName} IN (${placeholders})`);
+              values.push(...operand.map(v => this.transformForStorage({ v }).v));
+            }
+            continue;
+          default:
+            throw new Error(`Unsupported query operator: '${operator}' on field '${key}'.`);
+        }
+        whereParts.push(`${fieldName} ${sqlOperator} ?`);
+        values.push(this.transformForStorage({ operand }).operand);
+      } else {
+        whereParts.push(`${fieldName} = ?`);
+        values.push(this.transformForStorage({ value }).value);
+      }
+    }
+
+    return {
+      clause: whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '',
+      values
+    };
+  }
+
   private buildJoinQuery(entityName: string, conditions: Record<string, any>, includeFields: string[]): {
     sql: string;
     values: any[];
     joinedTables: { alias: string; entityName: string; relationship: Relationship }[];
   } {
     const { $limit, $offset, $sortBy, $include, ...whereConditions } = conditions;
-    
+
     let sql = `SELECT ${entityName}.*`;
     const joinedTables: { alias: string; entityName: string; relationship: Relationship }[] = [];
     const joinClauses: string[] = [];
 
-    // Add JOINs for belongs-to relationships
     for (const includeField of includeFields) {
       const relationship = this.relationships.find(
         rel => rel.from === entityName && rel.relationshipField === includeField && rel.type === 'belongs-to'
@@ -418,14 +463,12 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       if (relationship) {
         const alias = `${includeField}_tbl`;
         joinedTables.push({ alias, entityName: relationship.to, relationship });
-        
-        // Add columns from joined table with alias prefix
+
         const joinedSchema = this.schemas[relationship.to];
         const joinedFields = ['id', ...this.getStorableFields(joinedSchema).map(f => f.name)];
         const aliasedColumns = joinedFields.map(field => `${alias}.${field} AS ${alias}_${field}`);
         sql += `, ${aliasedColumns.join(', ')}`;
-        
-        // Add LEFT JOIN clause
+
         joinClauses.push(`LEFT JOIN ${relationship.to} ${alias} ON ${entityName}.${relationship.foreignKey} = ${alias}.id`);
       }
     }
@@ -435,30 +478,26 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       sql += ` ${joinClauses.join(' ')}`;
     }
 
-    // Add WHERE clause
-    const whereClause = Object.keys(whereConditions).length 
-      ? `WHERE ${Object.keys(whereConditions).map(key => `${entityName}.${key} = ?`).join(' AND ')}` 
-      : '';
-    if (whereClause) sql += ` ${whereClause}`;
+    const { clause: whereClause, values } = this.buildWhereClause(whereConditions, entityName);
+    if (whereClause) {
+      sql += ` ${whereClause}`;
+    }
 
-    // Add ORDER BY clause
     if ($sortBy) {
       const [field, direction = 'ASC'] = ($sortBy as string).split(':');
       sql += ` ORDER BY ${entityName}.${field} ${direction.toUpperCase() === 'DESC' ? 'DESC' : 'ASC'}`;
     }
 
-    // Add LIMIT and OFFSET
     if ($limit) sql += ` LIMIT ${$limit}`;
     if ($offset) sql += ` OFFSET ${$offset}`;
 
     return {
       sql,
-      values: Object.values(whereConditions),
+      values,
       joinedTables
     };
   }
 
-  // Helper method to parse JOIN query results
   private parseJoinResults(rows: any[], entityName: string, joinedTables: { alias: string; entityName: string; relationship: Relationship }[]): {
     entities: any[];
     includedData: Record<string, any>[];
@@ -467,24 +506,22 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     const includedDataArray: Record<string, any>[] = [];
 
     for (const row of rows) {
-      // Extract main entity data
       const mainEntity: Record<string, any> = {};
       const mainSchema = this.schemas[entityName];
       const mainFields = ['id', ...this.getStorableFields(mainSchema).map(f => f.name)];
-      
+
       for (const field of mainFields) {
         if (row[field] !== undefined) {
           mainEntity[field] = row[field];
         }
       }
 
-      // Extract included relationship data
       const includedData: Record<string, any> = {};
       for (const { alias, entityName: joinedEntityName, relationship } of joinedTables) {
         const joinedEntity: Record<string, any> = {};
         const joinedSchema = this.schemas[joinedEntityName];
         const joinedFields = ['id', ...this.getStorableFields(joinedSchema).map(f => f.name)];
-        
+
         let hasData = false;
         for (const field of joinedFields) {
           const aliasedFieldName = `${alias}_${field}`;
@@ -508,7 +545,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     return { entities, includedData: includedDataArray };
   }
 
-  // Helper method to handle one-to-many relationships separately (these require separate queries but can be optimized)
   private loadOneToManyIncludes(entityName: string, entities: any[], includeFields: string[]): Record<string, any>[] {
     const includedDataArray: Record<string, any>[] = entities.map(() => ({}));
 
@@ -518,19 +554,16 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       );
 
       if (relationship) {
-        // Get all entity IDs
         const entityIds = entities.map(e => e.id);
         if (entityIds.length === 0) continue;
 
         const singularParent = relationship.from.endsWith('s') ? relationship.from.slice(0, -1) : relationship.from;
         const foreignKeyInChild = `${singularParent}Id`;
 
-        // Single query to get all related entities
         const placeholders = entityIds.map(() => '?').join(', ');
         const sql = `SELECT * FROM ${relationship.to} WHERE ${foreignKeyInChild} IN (${placeholders})`;
         const relatedRows = this.db.query(sql).all(...entityIds);
 
-        // Group related entities by parent ID
         const relatedByParent: Record<string, any[]> = {};
         for (const row of relatedRows) {
           const parentId = row[foreignKeyInChild];
@@ -542,7 +575,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
           relatedByParent[parentId].push(augmentedEntity);
         }
 
-        // Assign to each entity's included data
         entities.forEach((entity, index) => {
           includedDataArray[index][includeField] = relatedByParent[entity.id] || [];
         });
@@ -564,10 +596,29 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     }
   }
 
+  private preprocessRelationshipFields(schema: z.ZodObject<any>, data: Record<string, any>): Record<string, any> {
+    const processedData = { ...data };
+    for (const [key, value] of Object.entries(data)) {
+      if (this.isRelationshipField(schema, key)) {
+        if (value && typeof value === 'object' && 'id' in value) {
+          const foreignKey = `${key}Id`;
+          processedData[foreignKey] = value.id;
+          delete processedData[key];
+        } else if (typeof value === 'string') {
+          const foreignKey = `${key}Id`;
+          processedData[foreignKey] = value;
+          delete processedData[key];
+        }
+      }
+    }
+    return processedData;
+  }
+
   private insert<T extends Record<string, any>>(entityName: string, data: Omit<T, 'id'>): AugmentedEntity<any> {
     const schema = this.schemas[entityName];
-    const id = this.generateId(entityName, data);
-    const validatedData = schema.passthrough().parse({ ...data, id });
+    const processedData = this.preprocessRelationshipFields(schema, data);
+    const id = this.generateId(entityName, processedData);
+    const validatedData = schema.passthrough().parse({ ...processedData, id });
     const storableData = Object.fromEntries(
       Object.entries(validatedData).filter(([key]) => !this.isRelationshipField(schema, key))
     );
@@ -593,10 +644,14 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     return results.length > 0 ? results[0] : null;
   }
 
+  private findOne<T extends Record<string, any>>(entityName: string, conditions: Record<string, any>): AugmentedEntity<any> | null {
+    const results = this.find(entityName, { ...conditions, $limit: 1 });
+    return results.length > 0 ? results[0] : null;
+  }
+
   private find<T extends Record<string, any>>(entityName: string, conditions: Record<string, any> = {}): AugmentedEntity<any>[] {
     const { $include, ...otherConditions } = conditions;
-    
-    // Parse $include parameter
+
     const includeFields: string[] = [];
     if ($include) {
       if (typeof $include === 'string') {
@@ -607,9 +662,8 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     }
 
     if (includeFields.length === 0) {
-      // No includes - use simple query
       const { $limit, $offset, $sortBy, ...whereConditions } = otherConditions;
-      const whereClause = Object.keys(whereConditions).length ? `WHERE ${Object.keys(whereConditions).map(key => `${key} = ?`).join(' AND ')}` : '';
+      const { clause: whereClause, values: whereValues } = this.buildWhereClause(whereConditions);
       let orderByClause = '';
       if ($sortBy) {
         const [field, direction = 'ASC'] = ($sortBy as string).split(':');
@@ -618,15 +672,14 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       const limitClause = $limit ? `LIMIT ${$limit}` : '';
       const offsetClause = $offset ? `OFFSET ${$offset}` : '';
       const sql = `SELECT * FROM ${entityName} ${whereClause} ${orderByClause} ${limitClause} ${offsetClause}`;
-      const rows = this.db.query(sql).all(...Object.values(whereConditions));
-      
+      const rows = this.db.query(sql).all(...whereValues);
+
       return rows.map(row => {
         const entity = this.transformFromStorage(row as any, this.schemas[entityName]) as T;
         return this._attachMethods(entityName, entity);
       });
     }
 
-    // Separate belongs-to and one-to-many includes
     const belongsToIncludes = includeFields.filter(field => {
       const rel = this.relationships.find(r => r.from === entityName && r.relationshipField === field);
       return rel?.type === 'belongs-to';
@@ -641,7 +694,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     let includedDataArray: Record<string, any>[];
 
     if (belongsToIncludes.length > 0) {
-      // Use JOIN query for belongs-to relationships
       const { sql, values, joinedTables } = this.buildJoinQuery(entityName, otherConditions, belongsToIncludes);
       console.log(`[Performance] Using JOIN query: ${sql}`);
       const rows = this.db.query(sql).all(...values);
@@ -649,9 +701,8 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       entities = result.entities;
       includedDataArray = result.includedData;
     } else {
-      // No belongs-to includes, use simple query
       const { $limit, $offset, $sortBy, ...whereConditions } = otherConditions;
-      const whereClause = Object.keys(whereConditions).length ? `WHERE ${Object.keys(whereConditions).map(key => `${key} = ?`).join(' AND ')}` : '';
+      const { clause: whereClause, values: whereValues } = this.buildWhereClause(whereConditions);
       let orderByClause = '';
       if ($sortBy) {
         const [field, direction = 'ASC'] = ($sortBy as string).split(':');
@@ -660,22 +711,20 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       const limitClause = $limit ? `LIMIT ${$limit}` : '';
       const offsetClause = $offset ? `OFFSET ${$offset}` : '';
       const sql = `SELECT * FROM ${entityName} ${whereClause} ${orderByClause} ${limitClause} ${offsetClause}`;
-      const rows = this.db.query(sql).all(...Object.values(whereConditions));
+      const rows = this.db.query(sql).all(...whereValues);
       entities = rows.map(row => this.transformFromStorage(row as any, this.schemas[entityName]) as T);
       includedDataArray = entities.map(() => ({}));
     }
 
-    // Handle one-to-many includes with optimized batch queries
     if (oneToManyIncludes.length > 0) {
       console.log(`[Performance] Using batch query for one-to-many: ${oneToManyIncludes.join(', ')}`);
       const oneToManyData = this.loadOneToManyIncludes(entityName, entities, oneToManyIncludes);
-      // Merge one-to-many data with belongs-to data
       includedDataArray = includedDataArray.map((includedData, index) => ({
         ...includedData,
         ...oneToManyData[index]
       }));
     }
-    
+
     return entities.map((entity, index) => {
       return this._attachMethods(entityName, entity, includedDataArray[index]);
     });
@@ -701,16 +750,18 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   }
 
   private upsert<T extends Record<string, any>>(entityName: string, data: Omit<T, 'id'> & { id?: string }, conditions: Partial<T> = {}): AugmentedEntity<any> {
-    const hasId = data.id && typeof data.id === 'string';
-    const existing = hasId ? this.get(entityName, { id: data.id } as Partial<T>) : Object.keys(conditions).length > 0 ? this.get(entityName, conditions) : null;
+    const schema = this.schemas[entityName];
+    const processedData = this.preprocessRelationshipFields(schema, data);
+    const processedConditions = this.preprocessRelationshipFields(schema, conditions);
+    const hasId = processedData.id && typeof processedData.id === 'string';
+    const existing = hasId ? this.get(entityName, { id: processedData.id } as Partial<T>) : Object.keys(processedConditions).length > 0 ? this.get(entityName, processedConditions) : null;
     if (existing) {
-      const updateData = { ...data };
+      const updateData = { ...processedData };
       delete updateData.id;
       return this.update(entityName, existing.id, updateData) as AugmentedEntity<any>;
     } else {
-      // Merge conditions into data for insert - this fixes the courseId issue
-      const insertData = { ...conditions, ...data };
-      delete insertData.id; // Remove id if it exists since insert generates its own
+      const insertData = { ...processedConditions, ...processedData };
+      delete insertData.id;
       return this.insert(entityName, insertData);
     }
   }
@@ -733,6 +784,5 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   }
 }
 
-// To properly type the instance, we export a type that merges the class and the dynamic accessors
 export type DB<S extends SchemaMap> = SatiDB<S> & TypedAccessors<S>;
 export { SatiDB, z };
