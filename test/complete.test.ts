@@ -9,7 +9,6 @@ const AuthorSchema = z.object({
 const PostSchema = z.object({
   title: z.string(),
   publishedAt: z.date().optional(),
-  authorId: z.string().optional(),
   author: z.lazy(() => AuthorSchema).optional(),
   post_tags: z.lazy(() => z.array(PostTagSchema)).optional(),
 });
@@ -48,6 +47,7 @@ describe('SatiDB - Documentation Showcase', () => {
       title: 'Intro to SatiDB', 
       publishedAt: new Date('2025-07-21') 
     });
+      console.log("post1", post1)
     const post2 = author.posts.push({
       title: 'Advanced SatiDB',
       publishedAt: new Date('2025-09-15')
