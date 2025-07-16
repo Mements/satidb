@@ -1,50 +1,42 @@
-diff --git a/Documents/medb/gen.ts b/Documents/medb/gen.ts
-index abcdef1..abcdef2 100644
---- a/Documents/medb/gen.ts
-+++ b/Documents/medb/gen.ts
-@@ -27,6 +27,7 @@ const mapZodToTsType = (zodDef) => {
+ diff --git a/./Documents/medb/satidb.ts b/./Documents/medb/satidb.ts
+index e69de29..1234567 100644
+--- a/Documents/medb/satidb.ts
++++ b/Documents/medb/satidb.ts
+ type TypedAccessors<T extends SchemaMap> = {
+@@ -100,6 +101,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
+         update: (id, data) => this.update(entityName, id, data),
+         upsert: (conditions, data) => this.upsert(entityName, data, conditions),
+         delete: (id) => this.delete(entityName, id),
++        unsubscribe: (event, callback) => this.unsubscribe(event, entityName, callback),
+         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
+       };
+       (this as any)[key] = accessor;
+@@ -179,6 +181,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
+             upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.to, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
+             delete: (id?: string) => {
+               if (id) {
++                this.unsubscribe(event, rel.to, callback);
+                 this.delete(rel.to, id);
+               } else {
+                 const relatedEntities = this.find(rel.to, { [foreignKeyInChild]: entity.id });
+@@ -455,6 +460,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
+             upsert: (conditions: any = {}, data: any = {}) => this.upsert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
+             delete: (id?: string) => {
+               if (id) {
++                this.unsubscribe(event, methodDef.childEntityName!, callback);
+                 this.delete(methodDef.childEntityName!, id);
+               } else {
+                 const relatedEntities = this.find(methodDef.childEntityName!, { [foreignKeyInChild]: entity.id });
+@@ -777,6 +784,12 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
+     this.subscriptions[event][entityName].push(callback);
+   }
  
- /**
-  * Analyzes the content of a schema file to extract schema definitions.
-+ * Also extracts table names from the exported tables object.
-  * @param {string} fileContent The content of the schema file.
-  * @returns {Array<Object>} An array of analyzed schema objects.
-  */
-@@ -34,10 +35,27 @@ const analyzeSchemas = (fileContent) => {
-   const schemaRegex = /export const (\w+?)Schema = z\.object\({([\s\S]+?)}\);/g;
-   const schemas = [...fileContent.matchAll(schemaRegex)];
-   
-+  // Extract table names from the tables export
-+  const tableRegex = /export const tables = ({[\s\S]*?});/;
-+  const tableMatch = fileContent.match(tableRegex);
-+  let tableNames: Record<string, string> = {};
-+  if (tableMatch) {
-+    const tableObjectStr = tableMatch[1]
-+      .replace(/(\w+?):\s*(\w+?)Schema/g, '"$1": "$2"')
-+      .replace(/,\s*}/, '}');
-+    try {
-+      tableNames = JSON.parse(tableObjectStr);
-+    } catch (e) {
-+      console.warn('Could not parse tables export, using default naming');
++  private unsubscribe(event: 'insert' | 'update' | 'delete', entityName: string, callback: (data: any) => void): void {
++    if (this.subscriptions[event][entityName]) {
++      this.subscriptions[event][entityName] = this.subscriptions[event][entityName].filter(cb => cb !== callback);
 +    }
 +  }
 +
-   return schemas.map(match => {
-     const schemaName = match[1]; // e.g., 'Personality'
-     const schemaBody = match[2];
-     
-+    // Use the table name from tables export if available, otherwise fallback to pluralize
-+    const accessorName = tableNames[schemaName] || pluralize(schemaName.charAt(0).toLowerCase() + schemaName.slice(1));
-+
-     const fieldRegex = /^\s*(\w+):\s*(.*?)(,)?\s*$/gm;
-     const fields = [...schemaBody.matchAll(fieldRegex)];
-     
-@@ -45,7 +63,7 @@ const analyzeSchemas = (fileContent) => {
-       name: schemaName,
-       augmentedName: `Augmented${schemaName}`,
-       dataName: `${schemaName}Data`,
--      accessorName: pluralize(schemaName.charAt(0).toLowerCase() + schemaName.slice(1)),
-+      accessorName,
-       primitives: [],
-       belongsTo: [],
-       oneToMany: [],
+ }
+ 
+ export type DB<S extends SchemaMap> = SatiDB<S> & TypedAccessors<S>;

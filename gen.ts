@@ -216,6 +216,8 @@ export type OneToManyAccessor<T, D> = {
   /** Deletes a related entity by its ID, or all related entities if no ID is provided. */
   delete: (id?: string) => void;
   /** An alias for insert. */
+  subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
+  unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
   push: (data: D) => T;
 };
 
@@ -236,6 +238,10 @@ export type EntityAccessor<T, D> = {
     /** Deletes an entity by its ID. */
     delete: (id: string) => void;
     /** Subscribes to database events ('insert', 'update', 'delete') for this entity type. */
+    subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
+    /** Unsubscribes from database events ('insert', 'update', 'delete') for this entity type. */
+    unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
+  unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
     subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
 };
 \n`;

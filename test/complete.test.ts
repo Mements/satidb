@@ -47,7 +47,6 @@ describe('SatiDB - Documentation Showcase', () => {
       title: 'Intro to SatiDB', 
       publishedAt: new Date('2025-07-21') 
     });
-      console.log("post1", post1)
     const post2 = author.posts.push({
       title: 'Advanced SatiDB',
       publishedAt: new Date('2025-09-15')

@@ -54,6 +54,7 @@ type EntityAccessor<S extends z.ZodObject<any>> = {
   upsert: (conditions?: Partial<InferSchema<S>>, data: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id: string) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
+  unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
 };
 
 type TypedAccessors<T extends SchemaMap> = {
@@ -90,6 +91,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         update: (id, data) => this.update(entityName, id, data),
         upsert: (conditions, data) => this.upsert(entityName, data, conditions),
         delete: (id) => this.delete(entityName, id),
+        unsubscribe: (event, callback) => this.unsubscribe(event, entityName, callback),
         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
       };
       (this as any)[key] = accessor;
@@ -180,6 +182,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
             upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.to, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
             delete: (id?: string) => {
               if (id) {
+                this.unsubscribe(event, rel.to, callback);
                 this.delete(rel.to, id);
               } else {
                 const relatedEntities = this.find(rel.to, { [foreignKeyInChild]: entity.id });
@@ -187,6 +190,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               }
             },
             subscribe: (event: any, callback: any) => this.subscribe(event, rel.to, callback),
+            unsubscribe: (event: any, callback: any) => this.unsubscribe(event, rel.from, callback),
             push: (data: any) => this.insert(rel.to, { ...data, [foreignKeyInChild]: entity.id }),
           }),
         });
@@ -238,6 +242,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
                 }
               },
               subscribe: (event: any, callback: any) => this.subscribe(event, rel.from, callback),
+              unsubscribe: (event: any, callback: any) => this.unsubscribe(event, rel.from, callback),
               push: (data: any) => this.insert(rel.from, { ...data, [foreignKeyInChild]: entity.id }),
             }),
           });
@@ -373,6 +378,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
             upsert: (conditions: any = {}, data: any = {}) => this.upsert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
             delete: (id?: string) => {
               if (id) {
+                this.unsubscribe(event, methodDef.childEntityName!, callback);
                 this.delete(methodDef.childEntityName!, id);
               } else {
                 const relatedEntities = this.find(methodDef.childEntityName!, { [foreignKeyInChild]: entity.id });
@@ -380,6 +386,8 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               }
             },
             subscribe: (event: any, callback: any) => this.subscribe(event, methodDef.childEntityName!, callback),
+            unsubscribe: (event: any, callback: any) => this.unsubscribe(event, methodDef.childEntityName!, callback),
+
             push: (data: any) => this.insert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }),
           };
         }
@@ -802,6 +810,12 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     this.subscriptions[event][entityName] = this.subscriptions[event][entityName] || [];
     this.subscriptions[event][entityName].push(callback);
   }
+  private unsubscribe(event: 'insert' | 'update' | 'delete', entityName: string, callback: (data: any) => void): void {
+    if (this.subscriptions[event][entityName]) {
+      this.subscriptions[event][entityName] = this.subscriptions[event][entityName].filter(cb => cb !== callback);
+    }
+  }
+
 }
 
 export type DB<S extends SchemaMap> = SatiDB<S> & TypedAccessors<S>;
