@@ -1,10 +1,50 @@
---- a/Documents/medb/satidb.test.ts
-+++ b/Documents/medb/satidb.test.ts
-@@ -190,7 +190,7 @@
-   expect(productNames).toEqual(['Keyboard', 'Laptop']);
-  
-   // 5. Demonstrate filtering on relational queries
--  const singleProductBobLiked = bob.likes({}, { $limit: 1 });
-+  const singleProductBobLiked = bob.likes({ $limit: 1 });
-   expect(singleProductBobLiked).toHaveLength(1);
-   console.log(`\n✅ Successfully filtered user's likes with $limit.`);
+diff --git a/Documents/medb/gen.ts b/Documents/medb/gen.ts
+index abcdef1..abcdef2 100644
+--- a/Documents/medb/gen.ts
++++ b/Documents/medb/gen.ts
+@@ -27,6 +27,7 @@ const mapZodToTsType = (zodDef) => {
+ 
+ /**
+  * Analyzes the content of a schema file to extract schema definitions.
++ * Also extracts table names from the exported tables object.
+  * @param {string} fileContent The content of the schema file.
+  * @returns {Array<Object>} An array of analyzed schema objects.
+  */
+@@ -34,10 +35,27 @@ const analyzeSchemas = (fileContent) => {
+   const schemaRegex = /export const (\w+?)Schema = z\.object\({([\s\S]+?)}\);/g;
+   const schemas = [...fileContent.matchAll(schemaRegex)];
+   
++  // Extract table names from the tables export
++  const tableRegex = /export const tables = ({[\s\S]*?});/;
++  const tableMatch = fileContent.match(tableRegex);
++  let tableNames: Record<string, string> = {};
++  if (tableMatch) {
++    const tableObjectStr = tableMatch[1]
++      .replace(/(\w+?):\s*(\w+?)Schema/g, '"$1": "$2"')
++      .replace(/,\s*}/, '}');
++    try {
++      tableNames = JSON.parse(tableObjectStr);
++    } catch (e) {
++      console.warn('Could not parse tables export, using default naming');
++    }
++  }
++
+   return schemas.map(match => {
+     const schemaName = match[1]; // e.g., 'Personality'
+     const schemaBody = match[2];
+     
++    // Use the table name from tables export if available, otherwise fallback to pluralize
++    const accessorName = tableNames[schemaName] || pluralize(schemaName.charAt(0).toLowerCase() + schemaName.slice(1));
++
+     const fieldRegex = /^\s*(\w+):\s*(.*?)(,)?\s*$/gm;
+     const fields = [...schemaBody.matchAll(fieldRegex)];
+     
+@@ -45,7 +63,7 @@ const analyzeSchemas = (fileContent) => {
+       name: schemaName,
+       augmentedName: `Augmented${schemaName}`,
+       dataName: `${schemaName}Data`,
+-      accessorName: pluralize(schemaName.charAt(0).toLowerCase() + schemaName.slice(1)),
++      accessorName,
+       primitives: [],
+       belongsTo: [],
+       oneToMany: [],
