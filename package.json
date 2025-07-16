@@ -2,7 +2,7 @@
   "name": "@ments/db",
   "module": "satidb.ts",
   "main": "./satidb.ts",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "type": "module",
   "private": false,
   "devDependencies": {
