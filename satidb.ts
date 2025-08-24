@@ -1,7 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { EventEmitter } from 'events';
 import { z } from 'zod';
-import { createHash } from 'crypto';
 
 type ZodType = z.ZodTypeAny;
 type SchemaMap = Record<string, z.ZodObject<any>>;
@@ -35,12 +34,12 @@ type AugmentedEntity<S extends z.ZodObject<any>> = InferSchema<S> & {
 
 type OneToManyRelationship<S extends z.ZodObject<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
-  get: (conditions: string | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
+  get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
   findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
-  update: (id: string, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
+  update: (id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
-  delete: (id?: string) => void;
+  delete: (id?: number) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
   unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
   push: (data: EntityData<S>) => AugmentedEntity<S>;
@@ -48,12 +47,12 @@ type OneToManyRelationship<S extends z.ZodObject<any>> = {
 
 type EntityAccessor<S extends z.ZodObject<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
-  get: (conditions: string | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
+  get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
   findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
-  update: (id: string, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
+  update: (id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
-  delete: (id: string) => void;
+  delete: (id: number) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
   unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
 };
@@ -97,15 +96,6 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       };
       (this as any)[key] = accessor;
     });
-  }
-
-  private generateId(entityName: string, data: Record<string, any>): string {
-    const schema = this.schemas[entityName];
-    const hashableData = Object.fromEntries(
-      Object.entries(data).filter(([key]) => !this.isRelationshipField(schema, key))
-    );
-    const hash = createHash('sha256').update(JSON.stringify(hashableData)).digest('hex');
-    return hash.substring(0, 16);
   }
 
   private parseRelationships(schemas: SchemaMap): Relationship[] {
@@ -174,14 +164,14 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
           fetch: (entity) => ({
             insert: (data: any) => this.insert(rel.to, { ...data, [foreignKeyInChild]: entity.id }),
             get: (conditions: any) => {
-              const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+              const queryConditions = typeof conditions === 'number' ? { id: conditions } : conditions;
               return this.get(rel.to, { ...queryConditions, [foreignKeyInChild]: entity.id });
             },
             findOne: (conditions: any) => this.findOne(rel.to, { ...conditions, [foreignKeyInChild]: entity.id }),
             find: (conditions: any = {}) => this.find(rel.to, { ...conditions, [foreignKeyInChild]: entity.id }),
-            update: (id: string, data: any) => this.update(rel.to, id, data),
+            update: (id: number, data: any) => this.update(rel.to, id, data),
             upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.to, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
-            delete: (id?: string) => {
+            delete: (id?: number) => {
               if (id) {
                 this.delete(rel.to, id);
               } else {
@@ -226,14 +216,14 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
             fetch: (entity) => ({
               insert: (data: any) => this.insert(rel.from, { ...data, [foreignKeyInChild]: entity.id }),
               get: (conditions: any) => {
-                const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+                const queryConditions = typeof conditions === 'number' ? { id: conditions } : conditions;
                 return this.get(rel.from, { ...queryConditions, [foreignKeyInChild]: entity.id });
               },
               findOne: (conditions: any) => this.findOne(rel.from, { ...conditions, [foreignKeyInChild]: entity.id }),
               find: (conditions: any = {}) => this.find(rel.from, { ...conditions, [foreignKeyInChild]: entity.id }),
-              update: (id: string, data: any) => this.update(rel.from, id, data),
+              update: (id: number, data: any) => this.update(rel.from, id, data),
               upsert: (conditions: any = {}, data: any = {}) => this.upsert(rel.from, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
-              delete: (id?: string) => {
+              delete: (id?: number) => {
                 if (id) {
                   this.delete(rel.from, id);
                 } else {
@@ -264,12 +254,12 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       );
       for (const rel of belongsToRels) {
         if (!storableFieldNames.has(rel.foreignKey)) {
-          columnDefs.push(`${rel.foreignKey} TEXT`);
+          columnDefs.push(`${rel.foreignKey} INTEGER`);
         }
         constraints.push(`FOREIGN KEY (${rel.foreignKey}) REFERENCES ${rel.to}(id) ON DELETE SET NULL`);
       }
 
-      const createTableSql = `CREATE TABLE IF NOT EXISTS ${entityName} (id TEXT PRIMARY KEY, ${columnDefs.join(', ')}${constraints.length > 0 ? ', ' + constraints.join(', ') : ''})`;
+      const createTableSql = `CREATE TABLE IF NOT EXISTS ${entityName} (id INTEGER PRIMARY KEY AUTOINCREMENT, ${columnDefs.join(', ')}${constraints.length > 0 ? ', ' + constraints.join(', ') : ''})`;
       this.db.run(createTableSql);
     }
   }
@@ -362,7 +352,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
           augmentedEntity[methodDef.name] = {
             insert: (data: any) => this.insert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }),
             get: (conditions: any) => {
-              const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+              const queryConditions = typeof conditions === 'number' ? { id: conditions } : conditions;
               return this.get(methodDef.childEntityName!, { ...queryConditions, [foreignKeyInChild]: entity.id });
             },
             findOne: (conditions: any = {}) => {
@@ -374,9 +364,9 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
               }
               return this.find(methodDef.childEntityName!, { ...conditions, [foreignKeyInChild]: entity.id });
             },
-            update: (id: string, data: any) => this.update(methodDef.childEntityName!, id, data),
+            update: (id: number, data: any) => this.update(methodDef.childEntityName!, id, data),
             upsert: (conditions: any = {}, data: any = {}) => this.upsert(methodDef.childEntityName!, { ...data, [foreignKeyInChild]: entity.id }, { ...conditions, [foreignKeyInChild]: entity.id }),
-            delete: (id?: string) => {
+            delete: (id?: number) => {
               if (id) {
                 this.delete(methodDef.childEntityName!, id);
               } else {
@@ -643,18 +633,21 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   private insert<T extends Record<string, any>>(entityName: string, data: Omit<T, 'id'>): AugmentedEntity<any> {
     const schema = this.schemas[entityName];
     const processedData = this.preprocessRelationshipFields(schema, data);
-    const id = this.generateId(entityName, processedData);
-    const validatedData = schema.passthrough().parse({ ...processedData, id });
+    const validatedData = schema.passthrough().parse(processedData);
     const storableData = Object.fromEntries(
       Object.entries(validatedData).filter(([key]) => !this.isRelationshipField(schema, key))
     );
-    const transformedData = this.transformForStorage({ ...storableData, id });
+    const transformedData = this.transformForStorage(storableData);
     const columns = Object.keys(transformedData);
-    const placeholders = columns.map(() => '?').join(', ');
-    const values = Object.values(transformedData);
-    const sql = `INSERT INTO ${entityName} (${columns.join(', ')}) VALUES (${placeholders})`;
-    this.db.query(sql).run(...values);
-    const newEntity = this.get(entityName, { id } as Partial<T>);
+    let sql: string;
+    if (columns.length === 0) {
+      sql = `INSERT INTO ${entityName} DEFAULT VALUES`;
+    } else {
+      const placeholders = columns.map(() => '?').join(', ');
+      sql = `INSERT INTO ${entityName} (${columns.join(', ')}) VALUES (${placeholders})`;
+    }
+    const result = this.db.query(sql).run(...Object.values(transformedData));
+    const newEntity = this.get(entityName, result.lastInsertRowid as number);
     if (!newEntity) throw new Error('Failed to retrieve entity after insertion');
     this.emit('insert', entityName, newEntity);
     if (this.subscriptions.insert[entityName]) {
@@ -663,8 +656,8 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     return newEntity;
   }
 
-  private get<T extends Record<string, any>>(entityName: string, conditions: string | Partial<T>): AugmentedEntity<any> | null {
-    const queryConditions = typeof conditions === 'string' ? { id: conditions } : conditions;
+  private get<T extends Record<string, any>>(entityName: string, conditions: number | Partial<T>): AugmentedEntity<any> | null {
+    const queryConditions = typeof conditions === 'number' ? { id: conditions } : conditions;
     if (Object.keys(queryConditions).length === 0) return null;
     const results = this.find(entityName, { ...queryConditions, $limit: 1 });
     return results.length > 0 ? results[0] : null;
@@ -756,7 +749,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     });
   }
 
-  private update<T extends Record<string, any>>(entityName: string, id: string, data: Partial<Omit<T, 'id'>>): AugmentedEntity<any> | null {
+  private update<T extends Record<string, any>>(entityName: string, id: number, data: Partial<Omit<T, 'id'>>): AugmentedEntity<any> | null {
     const schema = this.schemas[entityName];
     const validatedData = schema.partial().parse(data);
     const transformedData = this.transformForStorage(validatedData);
@@ -779,7 +772,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     const schema = this.schemas[entityName];
     const processedData = this.preprocessRelationshipFields(schema, data);
     const processedConditions = this.preprocessRelationshipFields(schema, conditions);
-    const hasId = processedData.id && typeof processedData.id === 'string';
+    const hasId = processedData.id && typeof processedData.id === 'number';
     const existing = hasId ? this.get(entityName, { id: processedData.id } as Partial<T>) : Object.keys(processedConditions).length > 0 ? this.get(entityName, processedConditions) : null;
     if (existing) {
       const updateData = { ...processedData };
@@ -792,7 +785,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     }
   }
 
-  private delete(entityName: string, id: string): void {
+  private delete(entityName: string, id: number): void {
     const entity = this.get(entityName, { id });
     if (entity) {
       const sql = `DELETE FROM ${entityName} WHERE id = ?`;

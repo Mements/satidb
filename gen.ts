@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import fs from 'fs';
 import path from 'path';
 
@@ -204,17 +205,17 @@ export type OneToManyAccessor<T, D> = {
   /** Inserts a new related entity. */
   insert: (data: D) => T;
   /** Retrieves a single related entity matching the query. Returns null if not found. */
-  get: (conditions: string | QueryConditions<D>) => T | null;
+  get: (conditions: number | QueryConditions<D>) => T | null;
   /** An alias for get. Retrieves a single related entity matching the query. */
   findOne: (conditions: QueryConditions<D>) => T | null;
   /** Finds all related entities matching the query. */
   find: (query?: FindQuery<D>) => T[];
   /** Updates a related entity by its ID. */
-  update: (id: string, data: Partial<D>) => T | null;
+  update: (id: number, data: Partial<D>) => T | null;
   /** Updates a related entity if it exists (based on query conditions), otherwise inserts a new one. */
   upsert: (conditions: QueryConditions<D>, data: Partial<D>) => T;
   /** Deletes a related entity by its ID, or all related entities if no ID is provided. */
-  delete: (id?: string) => void;
+  delete: (id?: number) => void;
   /** An alias for insert. */
   push: (data: D) => T;
 };
@@ -224,17 +225,17 @@ export type EntityAccessor<T, D> = {
     /** Inserts a new entity. */
     insert: (data: D) => T;
     /** Retrieves a single entity by its ID or by a set of query conditions. */
-    get: (conditions: string | QueryConditions<D>) => T | null;
+    get: (conditions: number | QueryConditions<D>) => T | null;
     /** An alias for get. Retrieves a single entity matching the query. */
     findOne: (conditions: QueryConditions<D>) => T | null;
     /** Finds all entities matching the query. */
     find: (query?: FindQuery<D>) => T[];
     /** Updates an entity by its ID. */
-    update: (id: string, data: Partial<D>) => T | null;
+    update: (id: number, data: Partial<D>) => T | null;
     /** Updates an entity if it exists (based on query conditions), otherwise inserts a new one. */
     upsert: (conditions: QueryConditions<D>, data: Partial<D>) => T;
     /** Deletes an entity by its ID. */
-    delete: (id: string) => void;
+    delete: (id: number) => void;
     /** Subscribes to database events ('insert', 'update', 'delete') for this entity type. */
     subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
     /** Unsubscribes from database events ('insert', 'update', 'delete') for this entity type. */
@@ -251,8 +252,8 @@ export type EntityAccessor<T, D> = {
         });
         // For creation, you can also specify related entities by their ID
         schema.belongsTo.forEach(r => {
-            dataDefs += `  /** Can be a string (the ID of the related \`${r.relatedName}\`) or an object with an ID. */\n`
-            dataDefs += `  ${r.fieldName}${r.isOptional ? '?' : ''}: { id: string } | string;\n`
+            dataDefs += `  /** Can be a number (the ID of the related \`${r.relatedName}\`) or an object with an ID. */\n`
+            dataDefs += `  ${r.fieldName}${r.isOptional ? '?' : ''}: { id: number } | number;\n`
         });
         dataDefs += '};\n\n';
     });
@@ -262,7 +263,7 @@ export type EntityAccessor<T, D> = {
         augmentedDefs += `/** Represents a \`${schema.name}\` record from the database, including methods and relationship accessors. */\n`;
         const relatedDataName = `${schema.name}Data`;
         augmentedDefs += `export type ${schema.augmentedName} = {\n`;
-        augmentedDefs += `  id: string;\n`;
+        augmentedDefs += `  id: number;\n`;
         // Primitives
         schema.primitives.forEach(p => {
             augmentedDefs += `  ${p.name}${p.isOptionalOnEntity ? '?' : ''}: ${p.type};\n`;
@@ -271,7 +272,7 @@ export type EntityAccessor<T, D> = {
         schema.belongsTo.forEach(r => {
             const relatedSchema = analyzedSchemas.find(s => s.name === r.relatedName);
             augmentedDefs += `  /** Foreign key for the related \`${r.relatedName}\`. */\n`
-            augmentedDefs += `  ${r.foreignKey}${r.isOptional ? '?' : ''}: string | null;\n`;
+            augmentedDefs += `  ${r.foreignKey}${r.isOptional ? '?' : ''}: number | null;\n`;
             augmentedDefs += `  /** Fetches the related \`${r.relatedName}\`. */\n`
             augmentedDefs += `  ${r.fieldName}: () => ${relatedSchema.augmentedName} | null;\n`;
         });
@@ -319,7 +320,7 @@ const main = () => {
     const outputFile = process.argv[3];
 
     if (!inputFile || !outputFile) {
-        console.error('Usage: bun generate-types.js <path/to/schemas.ts> <path/to/output/types.ts>');
+        console.error('Usage: bunx satidb-gen <path/to/schemas.ts> <path/to/output/types.ts>');
         process.exit(1);
     }
 

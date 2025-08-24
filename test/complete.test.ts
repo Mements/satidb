@@ -19,10 +19,8 @@ const TagSchema = z.object({
 });
 
 const PostTagSchema = z.object({
-  postId: z.string(),
-  tagId: z.string(),
-  post: z.lazy(() => PostSchema).optional(),
-  tag: z.lazy(() => TagSchema).optional(),
+  post: z.lazy(() => PostSchema),
+  tag: z.lazy(() => TagSchema),
 });
 
 describe('SatiDB - Documentation Showcase', () => {
