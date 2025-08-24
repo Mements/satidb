@@ -224,6 +224,8 @@ export type OneToManyAccessor<T, D> = {
 export type EntityAccessor<T, D> = {
     /** Inserts a new entity. */
     insert: (data: D) => T;
+    /** Finds multiple entities using Prisma-like interface with where, orderBy, take. */
+    findMany: (options: { where?: QueryConditions<D>; orderBy?: Record<keyof D, 'asc' | 'desc'>; take?: number }) => T[];
     /** Retrieves a single entity by its ID or by a set of query conditions. */
     get: (conditions: number | QueryConditions<D>) => T | null;
     /** An alias for get. Retrieves a single entity matching the query. */

@@ -44,14 +44,14 @@ describe('SatiDB - LLM Streaming Scenario', () => {
       description: 'A helpful AI assistant for coding questions',
     });
     console.log(`✅ Created personality: "${personality.name}" (ID: ${personality.id})`);
-    expect(personality.id).toBeString();
+    expect(personality.id).toBe(1);
     expect(personality.name).toBe('AI Assistant');
 
     const chat = personality.chats.push({
       title: 'JavaScript Help Session',
     });
     console.log(`✅ Created chat: "${chat.title}" (ID: ${chat.id})`);
-    expect(chat.id).toBeString();
+    expect(chat.id).toBe(1);
 
     // 3. Verify the 'belongs-to' relationship back to personality
     const parentPersonality = chat.personality();
@@ -107,7 +107,7 @@ describe('SatiDB - LLM Streaming Scenario', () => {
     expect(chatMessages.find(m => m.isUser).content).toBe(userMessage.content);
     expect(chatMessages.find(m => !m.isUser).content).toBe(finalMessage.content);
 
-    const firstMessageInChat = finalChat.message(userMessage.id);
+    const firstMessageInChat = finalChat.messages.get(userMessage.id);
     expect(firstMessageInChat.content).toBe(userMessage.content);
 
     // Correct: Access get directly on db.personalities
@@ -130,3 +130,4 @@ describe('SatiDB - LLM Streaming Scenario', () => {
     console.log('✅ Reactive update successful!');
   });
 });
+

@@ -5,11 +5,15 @@ import { SatiDB, z } from '../satidb';
 
 const StudentSchema = z.object({
   name: z.string(),
+  enrollments: z.lazy(() => z.array(EnrollmentSchema)).optional(),
 });
 const CourseSchema = z.object({
   title: z.string(),
+  enrollments: z.lazy(() => z.array(EnrollmentSchema)).optional(),
 });
 const EnrollmentSchema = z.object({
+  studentId: z.number().optional(),
+  courseId: z.number().optional(),
   student: z.lazy(() => StudentSchema).optional(),
   course: z.lazy(() => CourseSchema).optional(),
   grade: z.string().optional(),

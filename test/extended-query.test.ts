@@ -7,11 +7,13 @@ import { SatiDB, z } from '../satidb';
 const UserSchema = z.object({
   name: z.string(),
   level: z.number(),
+  sessions: z.lazy(() => z.array(SessionSchema)).optional(),
 });
 
 const SessionSchema = z.object({
   // The lazy-loaded relationship field should be optional
   // as we are providing the foreign key 'userId' on insert.
+  userId: z.number().optional(),
   user: z.lazy(() => UserSchema).optional(),
   token: z.string(),
   expiresAt: z.date(),

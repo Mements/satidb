@@ -4,14 +4,18 @@ import { SatiDB, z } from '../satidb';
 // --- Schemas for Many-to-Many Test ---
 const UserSchema = z.object({
   name: z.string(),
+  likes: z.lazy(() => z.array(LikeSchema)).optional(),
 });
 
 const ProductSchema = z.object({
   name: z.string(),
+  likes: z.lazy(() => z.array(LikeSchema)).optional(),
 });
 
 // Junction table
 const LikeSchema = z.object({
+  userId: z.number().optional(),
+  productId: z.number().optional(),
   user: z.lazy(() => UserSchema).optional(),
   product: z.lazy(() => ProductSchema).optional(),
 });

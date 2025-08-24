@@ -48,6 +48,7 @@ type OneToManyRelationship<S extends z.ZodObject<any>> = {
 type EntityAccessor<S extends z.ZodObject<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
   get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
+  findMany: (options: { where?: Record<string, any>; orderBy?: Record<string, 'asc' | 'desc'>; take?: number }) => AugmentedEntity<S>[];
   findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: (id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
@@ -86,6 +87,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       const accessor: EntityAccessor<Schemas[typeof key]> = {
         insert: (data) => this.insert(entityName, data),
         get: (conditions) => this.get(entityName, conditions),
+        findMany: (options) => this.findMany(entityName, options),
         findOne: (conditions) => this.findOne(entityName, conditions),
         find: (conditions) => this.find(entityName, conditions),
         update: (id, data) => this.update(entityName, id, data),
@@ -662,6 +664,27 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     const results = this.find(entityName, { ...queryConditions, $limit: 1 });
     return results.length > 0 ? results[0] : null;
   }
+  private findMany<T extends Record<string, any>>(entityName: string, options: {
+    where?: Record<string, any>;
+    orderBy?: Record<string, 'asc' | 'desc'>;
+    take?: number;
+  }): AugmentedEntity<any>[] {
+    const { where = {}, orderBy, take } = options;
+
+    // Convert Prisma-style options to internal format
+    const conditions: Record<string, any> = { ...where };
+
+    if (orderBy) {
+      const field = Object.keys(orderBy)[0];
+      const direction = orderBy[field];
+      conditions.$sortBy = `${field}:${direction}`;
+    }
+
+    if (take) conditions.$limit = take;
+
+    return this.find(entityName, conditions);
+  }
+
 
   private findOne<T extends Record<string, any>>(entityName: string, conditions: Record<string, any>): AugmentedEntity<any> | null {
     const results = this.find(entityName, { ...conditions, $limit: 1 });
