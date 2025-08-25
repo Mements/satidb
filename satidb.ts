@@ -49,6 +49,7 @@ type EntityAccessor<S extends z.ZodObject<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
   get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
   findMany: (options: { where?: Record<string, any>; orderBy?: Record<string, 'asc' | 'desc'>; take?: number }) => AugmentedEntity<S>[];
+  findUnique: (options: { where: Record<string, any> }) => AugmentedEntity<S> | null;
   findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: (id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
@@ -88,6 +89,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         insert: (data) => this.insert(entityName, data),
         get: (conditions) => this.get(entityName, conditions),
         findMany: (options) => this.findMany(entityName, options),
+        findUnique: (options) => this.findUnique(entityName, options),
         findOne: (conditions) => this.findOne(entityName, conditions),
         find: (conditions) => this.find(entityName, conditions),
         update: (id, data) => this.update(entityName, id, data),
@@ -684,6 +686,21 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
 
     return this.find(entityName, conditions);
   }
+  private findUnique<T extends Record<string, any>>(entityName: string, options: {
+    where: Record<string, any>;
+  }): AugmentedEntity<any> | null {
+    const { where } = options;
+
+    // Convert to internal format with limit 1
+    const conditions: Record<string, any> = {
+      ...where,
+      $limit: 1
+    };
+
+    const results = this.find(entityName, conditions);
+    return results.length > 0 ? results[0] : null;
+  }
+
 
 
   private findOne<T extends Record<string, any>>(entityName: string, conditions: Record<string, any>): AugmentedEntity<any> | null {

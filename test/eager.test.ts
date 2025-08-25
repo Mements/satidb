@@ -112,6 +112,38 @@ describe('SatiDB - Unified Core Showcase', () => {
 
     console.log('✅ New findMany interface working correctly!');
   });
+  it('should demonstrate new findUnique interface', () => {
+    const db = new SatiDB(':memory:', {
+      students: StudentSchema,
+      courses: CourseSchema,
+      enrollments: EnrollmentSchema,
+    });
+
+    const alice = db.students.insert({ name: 'Alice' });
+    const math = db.courses.insert({ title: 'Calculus I' });
+    db.enrollments.insert({ studentId: alice.id, courseId: math.id, grade: 'A' });
+
+    console.log('\n[New Interface] Testing findUnique...');
+
+    // Test the new findUnique interface
+    const enrollment = db.enrollments.findUnique({
+      where: { studentId: alice.id, grade: 'A' }
+    });
+
+    expect(enrollment).not.toBeNull();
+    expect(enrollment.grade).toBe('A');
+    expect(enrollment.studentId).toBe(alice.id);
+
+    // Test findUnique with no results
+    const notFound = db.enrollments.findUnique({
+      where: { grade: 'F' }
+    });
+
+    expect(notFound).toBeNull();
+
+    console.log('✅ New findUnique interface working correctly!');
+  });
+
 
   it('should demonstrate fixed upsert functionality', () => {
     const db = new SatiDB(':memory:', {
