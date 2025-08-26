@@ -1,20 +1,44 @@
 {
-  "name": "@ments/db",
-  "module": "satidb.ts",
-  "main": "./satidb.ts",
-  "version": "1.6.1",
+  "name": "satidb",
+  "version": "2.0.0", 
+  "description": "A fast, type-safe SQLite database wrapper for Bun",
   "type": "module",
-  "private": false,
+  "bin": {
+    "satidb": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "bun run ./src/build.ts",
+    "test": "bun test"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "sqlite",
+    "database",
+    "bun",
+    "typescript",
+    "type-safe",
+    "orm",
+    "sql"
+  ],
+  "author": "7flash",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:7flash/satidb.git"
+  },
   "devDependencies": {
-    "@types/bun": "latest"
+    "bun-types": "latest"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.0.0"
   },
   "dependencies": {
     "zod": "^3.25.67"
   },
-  "bin": {
-    "satidb-gen": "./gen.ts"
+  "engines": {
+    "bun": ">=1.0.0"
   }
 }
