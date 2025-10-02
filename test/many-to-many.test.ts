@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { SatiDB, z } from '../satidb';
+import { SatiDB, z } from '../src/satidb';
 
 // --- Schemas for Many-to-Many Test ---
 const UserSchema = z.object({

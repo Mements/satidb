@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { SatiDB, z } from '../satidb';
+import { SatiDB, z } from '../src/satidb';
 
 // --- Schemas for LLM Test ---
 const PersonalitySchema = z.object({

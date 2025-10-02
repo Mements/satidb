@@ -1,9 +1,9 @@
 import { EOL } from 'os';
 
-console.log("Starting build process for bgr...");
+console.log("Starting build process for satidb...");
 
 const result = await Bun.build({
-  entrypoints: ['./src/index.ts'],
+  entrypoints: ['./src/satidb.ts'],
   outdir: './dist',
   target: 'bun', // Optimize for the Bun runtime
   format: 'esm',
