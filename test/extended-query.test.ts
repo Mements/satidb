@@ -1,7 +1,7 @@
 // test/extended-query.test.ts
 
 import { describe, it, expect, beforeAll } from 'bun:test';
-import { SatiDB, z } from '../satidb';
+import { SatiDB, z } from '../src/satidb';
 
 // Define schemas for testing
 const UserSchema = z.object({

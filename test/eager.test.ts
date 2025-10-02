@@ -1,7 +1,7 @@
 // test/reactive.test.ts
 
 import { describe, it, expect } from 'bun:test';
-import { SatiDB, z } from '../satidb';
+import { SatiDB, z } from '../src/satidb';
 
 const StudentSchema = z.object({
   name: z.string(),
