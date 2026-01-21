@@ -37,7 +37,7 @@ type OneToManyRelationship<S extends z.ZodObject<any>> = {
   get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
   findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
-  update: (id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
+  update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((filter: Partial<InferSchema<S>>, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null);
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id?: number) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
@@ -52,7 +52,7 @@ type EntityAccessor<S extends z.ZodObject<any>> = {
   findUnique: (options: { where: Record<string, any> }) => AugmentedEntity<S> | null;
   findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
   find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
-  update: (id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
+  update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((filter: Partial<InferSchema<S>>, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null);
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id: number) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
@@ -92,7 +92,7 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         findUnique: (options) => this.findUnique(entityName, options),
         findOne: (conditions) => this.findOne(entityName, conditions),
         find: (conditions) => this.find(entityName, conditions),
-        update: (id, data) => this.update(entityName, id, data),
+        update: (idOrFilter, data) => this.updateWithFilter(entityName, idOrFilter, data),
         upsert: (conditions, data) => this.upsert(entityName, data, conditions),
         delete: (id) => this.delete(entityName, id),
         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
@@ -791,14 +791,14 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
 
   private update<T extends Record<string, any>>(entityName: string, id: number, data: Partial<Omit<T, 'id'>>): AugmentedEntity<any> | null {
     const schema = this.schemas[entityName];
-    const validatedData = schema.partial().parse(data);
+    const validatedData = schema!.partial().parse(data);
     const transformedData = this.transformForStorage(validatedData);
-    if (Object.keys(transformedData).length === 0) return this.get(entityName, { id } as Partial<T>);
+    if (Object.keys(transformedData).length === 0) return this.get(entityName, { id } as unknown as Partial<T>);
     const setClause = Object.keys(transformedData).map(key => `${key} = ?`).join(', ');
     const values = [...Object.values(transformedData), id];
     const sql = `UPDATE ${entityName} SET ${setClause} WHERE id = ?`;
     this.db.query(sql).run(...values);
-    const updatedEntity = this.get(entityName, { id } as Partial<T>);
+    const updatedEntity = this.get(entityName, { id } as unknown as Partial<T>);
     if (updatedEntity) {
       this.emit('update', entityName, updatedEntity);
       if (this.subscriptions.update[entityName]) {
@@ -806,6 +806,31 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       }
     }
     return updatedEntity;
+  }
+
+  /**
+   * Update with either a numeric ID or a filter object.
+   * If a number is passed, it's treated as the ID.
+   * If an object is passed, it's used as filter conditions to find the row to update.
+   */
+  private updateWithFilter<T extends Record<string, any>>(
+    entityName: string,
+    idOrFilter: number | Partial<T>,
+    data: Partial<Omit<T, 'id'>>
+  ): AugmentedEntity<any> | null {
+    // If it's a number, use the existing update method
+    if (typeof idOrFilter === 'number') {
+      return this.update(entityName, idOrFilter, data);
+    }
+
+    // Otherwise, treat it as a filter object - find the entity first
+    const entity = this.findOne(entityName, idOrFilter);
+    if (!entity) {
+      return null;
+    }
+
+    // Update using the found entity's ID
+    return this.update(entityName, entity.id, data);
   }
 
   private upsert<T extends Record<string, any>>(entityName: string, data: Omit<T, 'id'> & { id?: string }, conditions: Partial<T> = {}): AugmentedEntity<any> {

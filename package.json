@@ -1,16 +1,27 @@
 {
   "name": "satidb",
-  "version": "2.1.0", 
+  "version": "2.2.1",
   "description": "A fast, type-safe SQLite database wrapper for Bun",
   "type": "module",
+  "main": "./dist/satidb.js",
+  "module": "./dist/satidb.js",
+  "types": "./src/satidb.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/satidb.js",
+      "types": "./src/satidb.ts"
+    }
+  },
   "bin": {
-    "satidb": "./dist/index.js"
+    "satidb": "./dist/satidb.js"
   },
   "scripts": {
     "build": "bun run ./src/build.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
   },
   "files": [
+    "src",
     "dist",
     "README.md"
   ],
