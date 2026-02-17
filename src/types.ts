@@ -62,6 +62,8 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
     select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
     _tableName: string;
+    /** Phantom field for carrying schema type info to .join() */
+    readonly _schema?: S;
 };
 
 export type TypedAccessors<T extends SchemaMap> = {
