@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database as SqliteDatabase } from 'bun:sqlite';
 import { EventEmitter } from 'events';
 import { z } from 'zod';
 import { QueryBuilder } from './query-builder';
@@ -21,8 +21,8 @@ const asZodObject = (s: z.ZodType<any>) => s as unknown as z.ZodObject<any>;
 /** Index definition: single column or composite columns */
 type IndexDef = string | string[];
 
-/** Options for SatiDB constructor */
-type SatiDBOptions = {
+/** Options for sqlite-zod-orm constructor */
+type DatabaseOptions = {
   /** Enable trigger-based change tracking for efficient subscribe polling */
   changeTracking?: boolean;
   /** Index definitions per table: { tableName: ['col1', ['col2', 'col3']] } */
@@ -88,19 +88,19 @@ type TypedAccessors<T extends SchemaMap> = {
 };
 
 /**
- * A custom SQLite database wrapper with schema validation, relationships, and event handling.
+ * sqlite-zod-orm — Type-safe SQLite ORM for Bun with Zod schemas.
  */
-class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
-  private db: Database;
+class _Database<Schemas extends SchemaMap> extends EventEmitter {
+  private db: SqliteDatabase;
   private schemas: Schemas;
   private relationships: Relationship[];
   private lazyMethods: Record<string, LazyMethod[]>;
   private subscriptions: Record<'insert' | 'update' | 'delete', Record<string, ((data: any) => void)[]>>;
-  private options: SatiDBOptions;
+  private options: DatabaseOptions;
 
-  constructor(dbFile: string, schemas: Schemas, options: SatiDBOptions = {}) {
+  constructor(dbFile: string, schemas: Schemas, options: DatabaseOptions = {}) {
     super();
-    this.db = new Database(dbFile);
+    this.db = new SqliteDatabase(dbFile);
     this.db.run('PRAGMA foreign_keys = ON');
     this.schemas = schemas;
     this.options = options;
@@ -1153,13 +1153,18 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   }
 }
 
-// Re-export the class with proper typing so `new SatiDB(...)` returns entity accessors
-const SatiDB = _SatiDB as unknown as new <S extends SchemaMap>(dbFile: string, schemas: S, options?: SatiDBOptions) => _SatiDB<S> & TypedAccessors<S>;
-type SatiDB<S extends SchemaMap> = _SatiDB<S> & TypedAccessors<S>;
+// Re-export the class with proper typing so `new Database(...)` returns entity accessors
+const Database = _Database as unknown as new <S extends SchemaMap>(dbFile: string, schemas: S, options?: DatabaseOptions) => _Database<S> & TypedAccessors<S>;
+type Database<S extends SchemaMap> = _Database<S> & TypedAccessors<S>;
 
-export type DB<S extends SchemaMap> = SatiDB<S>;
-export type { SatiDBOptions };
-export { SatiDB, z };
+// Backward-compatible alias
+const SatiDB = Database;
+type SatiDB<S extends SchemaMap> = Database<S>;
+
+export type DB<S extends SchemaMap> = Database<S>;
+export type { DatabaseOptions };
+export type { DatabaseOptions as SatiDBOptions };
+export { Database, SatiDB, z };
 export { QueryBuilder } from './query-builder';
 export { ColumnNode, type ProxyQueryResult } from './proxy-query';
 export {

@@ -1,321 +1,304 @@
 # sqlite-zod-orm
 
-Type-safe SQLite ORM for Bun. Define Zod schemas, get a fully-typed database with fluent queries, change tracking, and zero SQL.
-
-## Install
+Type-safe SQLite ORM for Bun. Define schemas with Zod, get a fully-typed database with **three ways to query**, automatic relationships, and zero SQL.
 
 ```bash
 bun add sqlite-zod-orm
 ```
 
-## 30-Second Example
+## Quick Start
 
 ```typescript
-import { SatiDB, z } from 'sqlite-zod-orm';
+import { Database, z } from 'sqlite-zod-orm';
 
-const db = new SatiDB(':memory:', {
-  users: z.object({
+const db = new Database(':memory:', {
+  forests: z.object({
     name: z.string(),
-    email: z.string(),
-    role: z.enum(['admin', 'user']),
+    address: z.string(),
+    trees: z.lazy(() => z.array(TreeSchema)).optional(), // one-to-many
+  }),
+  trees: z.object({
+    name: z.string(),
+    planted: z.string(),
+    alive: z.boolean().default(true),
+    forest: z.lazy(() => ForestSchema).optional(),       // belongs-to → auto FK
   }),
 });
 
 // Insert
-const alice = db.users.insert({ name: 'Alice', email: 'alice@co.dev', role: 'admin' });
+const sherwood = db.forests.insert({ name: 'Sherwood', address: 'Nottingham, UK' });
 
-// Query
-const admins = db.users.select().where({ role: 'admin' }).all();
-const first  = db.users.select().where({ email: 'alice@co.dev' }).get();
-const count  = db.users.select().where({ role: 'user' }).count();
-
-// Update
-db.users.update(alice.id, { name: 'Alice Smith' });               // by ID
-db.users.update({ role: 'user' }).where({ name: 'Alice' }).exec(); // fluent
-
-// Upsert
-db.users.upsert({ email: 'alice@co.dev' }, { name: 'Alice S.', email: 'alice@co.dev', role: 'admin' });
-
-// Delete
-db.users.delete(alice.id);
+// Insert via relationship (auto-sets forestId)
+sherwood.trees.push({ name: 'Major Oak', planted: '1500-01-01' });
 ```
 
-## Features
+---
 
-| Feature | Description |
-|---------|-------------|
-| **Zod schemas** | Define tables with `z.object()` — runtime validation on every insert/update |
-| **Fluent `select()`** | `.where()` `.orderBy()` `.limit()` `.offset()` `.count()` `.get()` `.all()` |
-| **Fluent `update()`** | `update(data).where(filter).exec()` — single SQL query, no round-trips |
-| **Upsert** | Insert-or-update with `upsert(match, data)` |
-| **Indexes** | Single and composite indexes, declared in config |
-| **Change tracking** | SQLite triggers log every INSERT/UPDATE/DELETE with timestamps |
-| **Events** | `subscribe('insert' \| 'update' \| 'delete', callback)` per entity |
-| **Zero config** | Works with Bun's built-in SQLite. No migrations, no CLI |
+## Three Ways to Query
 
-## Query API
+### 1. Fluent Builder — `select().where().all()`
 
-Everything goes through `select()` — one fluent builder for all reads:
+Single-table queries with chaining. The workhorse API.
 
 ```typescript
-// All rows
-db.users.select().all()
-
-// Filtered
-db.users.select().where({ role: 'admin' }).all()
-
-// Operators
-db.users.select().where({ age: { $gt: 18 } }).all()
-db.users.select().where({ status: { $in: ['active', 'trial'] } }).all()
-
-// Sorting + pagination
-db.users.select()
-  .where({ role: 'user' })
-  .orderBy('name', 'asc')
+// All alive trees, sorted by planting date
+const trees = db.trees.select()
+  .where({ alive: true })
+  .orderBy('planted', 'asc')
   .limit(10)
-  .offset(20)
-  .all()
+  .all();
 
-// Single row
-db.users.select().where({ email: 'alice@co.dev' }).get()
+// With operators
+const old = db.trees.select()
+  .where({ planted: { $lt: '1600-01-01' } })
+  .all();
 
 // Count
-db.users.select().where({ role: 'admin' }).count()
+const total = db.trees.select().where({ alive: true }).count();
+
+// Single row
+const oak = db.trees.select().where({ name: 'Major Oak' }).get();
 ```
 
-### Where Operators
+**Operators:** `$gt` `$gte` `$lt` `$lte` `$ne` `$in`
 
-| Operator | SQL | Example |
-|----------|-----|---------|
-| `{ $gt: n }` | `>` | `{ age: { $gt: 18 } }` |
-| `{ $gte: n }` | `>=` | `{ score: { $gte: 90 } }` |
-| `{ $lt: n }` | `<` | `{ price: { $lt: 100 } }` |
-| `{ $lte: n }` | `<=` | `{ rating: { $lte: 3 } }` |
-| `{ $ne: v }` | `!=` | `{ status: { $ne: 'deleted' } }` |
-| `{ $in: [] }` | `IN` | `{ role: { $in: ['admin', 'mod'] } }` |
+### 2. Fluent Join — `select().join(db.table).all()`
 
-## Update API
-
-Two patterns:
+Cross-table queries with auto-inferred foreign keys. No SQL, no manual FK strings.
 
 ```typescript
-// By ID — returns the updated entity
-const updated = db.users.update(id, { name: 'New Name' });
+// Join trees with their forest — FK auto-detected from z.lazy() relationship
+const rows = db.trees.select('name', 'planted')
+  .join(db.forests, ['name', 'address'])
+  .where({ alive: true })
+  .orderBy('planted', 'asc')
+  .all();
 
-// Fluent — single SQL query, returns affected row count
-const affected = db.users.update({ role: 'user' })
-  .where({ lastLogin: { $lt: cutoff } })
-  .exec();
+// Result: [{ name: 'Major Oak', planted: '1500-01-01', forests_name: 'Sherwood', forests_address: 'Nottingham, UK' }]
 ```
 
-## Indexes
+The join is resolved automatically from your `z.lazy()` relationship declarations — no need to specify `forestId` or `id`.
 
-Declare in options — single column or composite:
+### 3. Proxy Query — `db.query(c => { ... })`
+
+Full SQL-like control with destructured table aliases. For complex multi-table joins.
 
 ```typescript
-const db = new SatiDB('app.db', schemas, {
-  indexes: {
-    users: ['email', 'role'],                  // two single-column indexes
-    orders: ['userId', ['userId', 'status']],  // single + composite
-  },
+const rows = db.query(c => {
+  const { forests: f, trees: t } = c;
+  return {
+    select: { tree: t.name, forest: f.name, planted: t.planted },
+    join: [[t.forestId, f.id]],
+    where: { [f.name]: 'Sherwood' },
+    orderBy: { [t.planted]: 'asc' },
+  };
 });
+// [{ tree: 'Major Oak', forest: 'Sherwood', planted: '1500-01-01' }, ...]
 ```
 
-## Change Tracking
-
-Enable trigger-based tracking for polling/sync patterns:
-
-```typescript
-const db = new SatiDB('app.db', schemas, {
-  changeTracking: true,
-});
-
-// Get all changes since sequence number 0
-const changes = db.getChangesSince(0);
-// [{ id: 1, table_name: 'users', row_id: 1, action: 'INSERT', timestamp: '...' }, ...]
-
-// Filter by table
-const userChanges = db.getChangesSince(lastSeq, 'users');
-```
+---
 
 ## Relationships
 
-Define with `z.lazy()` refs — SatiDB auto-detects belongs-to and one-to-many from your schemas:
+Define relationships with `z.lazy()`. The ORM auto-creates foreign key columns (integer), indexes, and navigation methods.
 
 ```typescript
-import { SatiDB, z } from 'sqlite-zod-orm';
+interface Author { name: string; posts?: Post[]; }
+interface Post { title: string; author?: Author; }
 
-const AuthorSchema = z.object({
+const AuthorSchema: z.ZodType<Author> = z.object({
   name: z.string(),
-  posts: z.lazy(() => z.array(PostSchema)).optional(),   // one-to-many
+  posts: z.lazy(() => z.array(PostSchema)).optional(),    // one-to-many
 });
 
-const PostSchema = z.object({
+const PostSchema: z.ZodType<Post> = z.object({
   title: z.string(),
-  content: z.string(),
-  author: z.lazy(() => AuthorSchema).optional(),          // belongs-to
+  author: z.lazy(() => AuthorSchema).optional(),          // belongs-to → auto authorId FK
 });
-
-const db = new SatiDB(':memory:', {
-  authors: AuthorSchema,
-  posts: PostSchema,
-});
-
-// Insert an author
-const author = db.authors.insert({ name: 'Alice' });
-
-// Add a post via the relationship (auto-sets authorId foreign key)
-const post = author.posts.push({ title: 'Hello World', content: '...' });
-
-// Navigate back: belongs-to returns a callable
-const postAuthor = post.author();   // => { id: 1, name: 'Alice', ... }
-
-// Query children through the relationship
-const allPosts = author.posts.find();
-const firstPost = author.posts.get(1);
 ```
 
-**How it works:**
-- `z.lazy(() => z.array(Schema))` → **one-to-many** — adds `.push()`, `.find()`, `.get()` methods
-- `z.lazy(() => Schema)` → **belongs-to** — adds a callable that returns the parent entity
-- Foreign keys are auto-inferred: a `author` belongs-to field creates an `authorId` column
+**Navigation:**
 
-## Events
+```typescript
+// belongs-to: navigate child → parent
+const post = db.posts.select().where({ title: 'Hello' }).get();
+const author = post.author();  // → { id: 1, name: 'Alice' }
 
-Subscribe to mutations per entity:
+// one-to-many: navigate parent → children
+const alice = db.authors.get({ name: 'Alice' });
+const posts = alice.posts.find();  // → [{ id: 1, title: 'Hello' }, ...]
+
+// insert via relationship (auto-sets authorId)
+alice.posts.push({ title: 'New Post' });
+```
+
+---
+
+## CRUD
+
+```typescript
+// Insert
+const user = db.users.insert({ name: 'Alice', role: 'admin' });
+
+// Get by ID
+const found = db.users.get(1);
+
+// Get by filter
+const admin = db.users.get({ role: 'admin' });
+
+// Update by ID
+db.users.update(1, { role: 'superadmin' });
+
+// Fluent update (returns affected count)
+db.users.update({ role: 'member' }).where({ role: 'guest' }).exec();
+
+// Upsert
+db.users.upsert({ name: 'Alice' }, { name: 'Alice', role: 'admin' });
+
+// Delete
+db.users.delete(1);
+```
+
+---
+
+## Schema Validation
+
+Zod validates every insert and update at runtime:
+
+```typescript
+const db = new Database(':memory:', {
+  users: z.object({
+    name: z.string().min(1),
+    email: z.string().email(),
+    age: z.number().int().positive(),
+  }),
+});
+
+db.users.insert({ name: '', email: 'bad', age: -1 });  // throws ZodError
+```
+
+Defaults work too:
+
+```typescript
+const TreeSchema = z.object({
+  name: z.string(),
+  alive: z.boolean().default(true),  // auto-applied on insert
+});
+```
+
+---
+
+## Indexes
+
+```typescript
+const db = new Database(':memory:', schemas, {
+  indexes: {
+    users: ['email', ['name', 'role']],  // single + composite
+    trees: ['forestId', 'planted'],
+  },
+});
+```
+
+---
+
+## Change Tracking
+
+```typescript
+const db = new Database(':memory:', schemas, {
+  changeTracking: true,
+});
+
+// Get all changes since version 0
+const changes = db.getChangesSince(0);
+// [{ version: 1, table_name: 'users', row_id: 1, action: 'INSERT' }, ...]
+
+// Filter by table
+const userChanges = db.getChangesSince(0, 'users');
+```
+
+---
+
+## Event Subscriptions
 
 ```typescript
 db.users.subscribe('insert', (user) => {
-  console.log(`New user: ${user.name}`);
+  console.log('New user:', user.name);
 });
 
 db.users.subscribe('update', (user) => {
-  sendWebhook('user.updated', user);
+  console.log('Updated:', user.name);
 });
 
 db.users.subscribe('delete', (user) => {
-  cleanup(user.id);
+  console.log('Deleted:', user.id);
 });
-
-db.users.unsubscribe('insert', handler);
 ```
 
-## Real-World Examples
+---
 
-### Process Manager
+## Smart Polling (subscribe to query changes)
 
 ```typescript
-import { SatiDB, z } from 'sqlite-zod-orm';
+const unsub = db.users.select()
+  .where({ role: 'admin' })
+  .orderBy('name', 'asc')
+  .subscribe((admins) => {
+    console.log('Admin list changed:', admins);
+  }, { interval: 1000 });
 
-const db = new SatiDB(':memory:', {
-  processes: z.object({
-    pid: z.number(),
-    name: z.string(),
-    command: z.string(),
-    workdir: z.string(),
-  }),
-}, {
-  indexes: { processes: ['name', 'pid'] },
-  changeTracking: true,
-});
-
-// Get latest process by name
-const latest = db.processes.select()
-  .where({ name: 'web-server' })
-  .orderBy('id', 'desc')
-  .limit(1)
-  .get();
-
-// Remove all by name
-const procs = db.processes.select().where({ name: 'worker' }).all();
-for (const p of procs) db.processes.delete(p.id);
+// Stop listening
+unsub();
 ```
 
-### Platform Database (9 tables)
+Uses fingerprint-based polling (`COUNT + MAX(id)`) — only re-fetches when data actually changes.
+
+---
+
+## AST-Based Queries
+
+For complex expressions, use the callback-style WHERE with full operator support:
 
 ```typescript
-import { SatiDB, z } from 'sqlite-zod-orm';
-
-const db = new SatiDB('galaxy.db', {
-  users: UserSchema,
-  servers: ServerSchema,
-  members: MemberSchema,
-  agentTemplates: AgentTemplateSchema,
-  agentInstances: AgentInstanceSchema,
-  jobs: JobSchema,
-  generations: GenerationSchema,
-  customAgents: CustomAgentSchema,
-  messages: MessageSchema,
-}, {
-  changeTracking: true,
-  indexes: {
-    users: ['userId'],
-    servers: ['serverId', 'slug'],
-    members: ['serverId', ['serverId', 'userId']],
-    jobs: ['jobId', 'status'],
-    generations: ['jobId', 'instanceId'],
-    messages: [['agentInstanceId', 'userId']],
-  },
-});
-
-// Update balance — single SQL query
-db.servers.update({ balance: 750 }).where({ serverId: 'default' }).exec();
-
-// Count generations for a job
-const count = db.generations.select().where({ jobId }).count();
-db.jobs.update({ generationCount: count }).where({ jobId }).exec();
-
-// Enrich with related data (sync, no await needed)
-const job = db.jobs.select().where({ jobId: 'job-001' }).get();
-const user = db.users.select().where({ userId: job.userId }).get();
-const instance = db.agentInstances.select().where({ instanceId: job.instanceId }).get();
+const results = db.users.select()
+  .where((c, f, op) => op.and(
+    op.eq(f.lower(c.name), 'alice'),
+    op.gt(c.age, 18)
+  ))
+  .all();
 ```
 
-See [`examples/`](./examples/) for full implementations with tests:
+---
 
-| Example | What it shows |
-|---------|---------------|
-| [positions.ts](./examples/positions.ts) | File position tracking with upsert |
-| [process-manager.ts](./examples/process-manager.ts) | Process management with retry logic |
-| [system-db.ts](./examples/system-db.ts) | Multi-entity system DB with key-value config |
-| [galaxy-db.ts](./examples/galaxy-db.ts) | 9-entity AI platform with enrichment and seeding |
-| [messaging.test.ts](./examples/messaging.test.ts) | Comprehensive feature showcase (subscriptions, change tracking, upsert) |
+## Full Example
+
+See [`examples/forests.ts`](./examples/forests.ts) and [`examples/forests.test.ts`](./examples/forests.test.ts) for a complete working example covering all three query styles, relationships, mutations, validation, and more.
+
+```bash
+bun test examples/forests.test.ts
+```
+
+---
 
 ## API Reference
 
-### Constructor
-
-```typescript
-const db = new SatiDB(path: string, schemas: SchemaMap, options?: {
-  changeTracking?: boolean;   // enable INSERT/UPDATE/DELETE logging
-  indexes?: Record<string, (string | string[])[]>;  // per-table indexes
-});
-```
-
-### Entity Methods
-
-| Method | Signature | Returns |
-|--------|-----------|---------|
-| `insert` | `insert(data)` | `AugmentedEntity` |
-| `get` | `get(id)` or `get(filter)` | `AugmentedEntity \| null` |
-| `select` | `select()` | `QueryBuilder` |
-| `update` | `update(id, data)` | `AugmentedEntity \| null` |
-| `update` | `update(data)` | `UpdateBuilder` (chain `.where().exec()`) |
-| `upsert` | `upsert(match, data)` | `AugmentedEntity` |
-| `delete` | `delete(id)` | `void` |
-| `subscribe` | `subscribe(event, callback)` | `void` |
-| `unsubscribe` | `unsubscribe(event, callback)` | `void` |
-
-### DB Methods
-
-| Method | Signature | Returns |
-|--------|-----------|---------|
-| `getChangesSince` | `getChangesSince(seq, table?)` | `Change[]` |
-
-## Requirements
-
-- [Bun](https://bun.sh) ≥ 1.0
-- TypeScript ≥ 5.0
+| Method | Description |
+|---|---|
+| `new Database(path, schemas, options?)` | Create database with Zod schemas |
+| `db.table.insert(data)` | Insert with validation |
+| `db.table.get(id \| filter)` | Get single row |
+| `db.table.update(id, data)` | Update by ID |
+| `db.table.update(data).where(filter).exec()` | Fluent update |
+| `db.table.upsert(match, data)` | Insert or update |
+| `db.table.delete(id)` | Delete by ID |
+| `db.table.select().where().orderBy().limit().offset().all()` | Fluent query |
+| `db.table.select().join(db.other, cols?).all()` | Fluent join (auto FK) |
+| `db.query(c => { ... })` | Proxy callback query |
+| `db.table.select().count()` | Count rows |
+| `db.table.select().subscribe(cb, opts)` | Smart polling |
+| `db.getChangesSince(version, table?)` | Change tracking |
+| `entity.parent()` | Navigate belongs-to |
+| `entity.children.find()` | Navigate one-to-many |
+| `entity.children.push(data)` | Insert via relationship |
 
 ## License
 

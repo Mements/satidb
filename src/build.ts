@@ -1,6 +1,6 @@
 import { EOL } from 'os';
 
-console.log("Starting build process for satidb...");
+console.log("Building sqlite-zod-orm...");
 
 const result = await Bun.build({
   entrypoints: ['./src/satidb.ts'],

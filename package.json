@@ -1,7 +1,7 @@
 {
   "name": "sqlite-zod-orm",
-  "version": "3.0.0",
-  "description": "A fast, type-safe SQLite ORM for Bun powered by Zod schemas",
+  "version": "3.1.0",
+  "description": "Type-safe SQLite ORM for Bun — Zod schemas, fluent queries, auto relationships, zero SQL",
   "type": "module",
   "main": "./dist/satidb.js",
   "module": "./dist/satidb.js",
@@ -11,9 +11,6 @@
       "import": "./dist/satidb.js",
       "types": "./src/satidb.ts"
     }
-  },
-  "bin": {
-    "sqlite-zod-orm": "./dist/satidb.js"
   },
   "scripts": {
     "build": "bun run ./src/build.ts",
@@ -32,13 +29,16 @@
     "typescript",
     "type-safe",
     "orm",
-    "sql"
+    "zod",
+    "sql",
+    "query-builder",
+    "relationships"
   ],
   "author": "7flash",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:7flash/satidb.git"
+    "url": "git@github.com:7flash/sqlite-zod-orm.git"
   },
   "devDependencies": {
     "bun-types": "latest"

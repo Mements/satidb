@@ -1,19 +1,16 @@
 /**
  * forests.ts — sqlite-zod-orm example: Forests & Trees
  *
- * A side-by-side comparison showing how sqlite-zod-orm handles
- * the classic parent-child pattern with:
- *  - Zod schemas with runtime validation
- *  - z.lazy() relationships (auto foreign keys, .push(), navigation)
- *  - Fluent select() builder
- *  - SQL-like db.query(c => {...}) proxy callback for JOINs
- *  - Computed fields via getters (no special DSL)
- *  - Indexes declared in config
+ * Demonstrates:
+ *  - Zod schemas with z.lazy() relationships (auto foreign keys)
+ *  - Fluent select().where().join() builder
+ *  - SQL-like db.query(c => {...}) proxy callback
+ *  - Computed fields, defaults, indexes
  *
- *    bun test examples/forests.test.ts
+ *   bun test examples/forests.test.ts
  */
 
-import { SatiDB, z } from '../src/satidb';
+import { Database, z } from '../src/satidb';
 
 // =============================================================================
 // SCHEMAS
@@ -50,7 +47,7 @@ const TreeSchema: z.ZodType<Tree> = z.object({
 // =============================================================================
 
 export function createForestsDb(dbPath = ':memory:') {
-    const db = new SatiDB(dbPath, {
+    const db = new Database(dbPath, {
         forests: ForestSchema,
         trees: TreeSchema,
     }, {

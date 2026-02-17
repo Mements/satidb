@@ -1,9 +1,12 @@
 /**
- * forests.test.ts — sqlite-zod-orm vs competitor comparison
+ * forests.test.ts — sqlite-zod-orm integration tests
  *
- * Same domain (Forests → Trees), showing both query APIs:
- *   1. Fluent builder:  db.trees.select().where({...}).all()
- *   2. Proxy callback:  db.query(c => { ... })  (SQL-like JOINs)
+ * Covers all three query approaches:
+ *   1. Fluent builder:   db.trees.select().where({...}).all()
+ *   2. Fluent join:      db.trees.select().join(db.forests).all()
+ *   3. Proxy callback:   db.query(c => { ... })
+ *
+ * Plus: relationships, mutations, schema validation, computed fields.
  *
  *   bun test examples/forests.test.ts
  */
