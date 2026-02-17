@@ -508,7 +508,7 @@ test('migrations: auto-adds new columns when schema evolves', () => {
             users: z.object({ name: z.string() }),
         });
         dbA.users.insert({ name: 'Bob' });
-        expect(dbA.users.find().length).toBe(1);
+        expect(dbA.users.select().all().length).toBe(1);
 
         // Step 2: Reopen with an extra column — migration should add it
         const dbB = new SatiDB(dbPath, {
@@ -519,14 +519,14 @@ test('migrations: auto-adds new columns when schema evolves', () => {
         });
 
         // The existing row should still be accessible
-        const all = dbB.users.find();
+        const all = dbB.users.select().all();
         const bob = all.find((u: any) => u.name === 'Bob');
         expect(bob).toBeDefined();
         expect(bob!.name).toBe('Bob');
 
         // New rows can use the new column
         dbB.users.insert({ name: 'Carol', email: 'carol@test.com' });
-        const carol = dbB.users.find().find((u: any) => u.name === 'Carol');
+        const carol = dbB.users.select().all().find((u: any) => u.name === 'Carol');
         expect(carol).toBeDefined();
         expect(carol!.email).toBe('carol@test.com');
     } finally {

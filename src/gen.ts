@@ -206,10 +206,6 @@ export type OneToManyAccessor<T, D> = {
   insert: (data: D) => T;
   /** Retrieves a single related entity matching the query. Returns null if not found. */
   get: (conditions: number | QueryConditions<D>) => T | null;
-  /** An alias for get. Retrieves a single related entity matching the query. */
-  findOne: (conditions: QueryConditions<D>) => T | null;
-  /** Finds all related entities matching the query. */
-  find: (query?: FindQuery<D>) => T[];
   /** Updates a related entity by its ID. */
   update: (id: number, data: Partial<D>) => T | null;
   /** Updates a related entity if it exists (based on query conditions), otherwise inserts a new one. */
@@ -251,16 +247,8 @@ export type QueryBuilder<T> = {
 export type EntityAccessor<T, D> = {
     /** Inserts a new entity. */
     insert: (data: D) => T;
-    /** Finds multiple entities using Prisma-like interface with where, orderBy, take. */
-    findMany: (options: { where?: QueryConditions<D>; orderBy?: Record<keyof D, 'asc' | 'desc'>; take?: number }) => T[];
-    /** Finds a unique entity using Prisma-like interface with where clause. */
-    findUnique: (options: { where: QueryConditions<D> }) => T | null;
     /** Retrieves a single entity by its ID or by a set of query conditions. */
     get: (conditions: number | QueryConditions<D>) => T | null;
-    /** An alias for get. Retrieves a single entity matching the query. */
-    findOne: (conditions: QueryConditions<D>) => T | null;
-    /** Finds all entities matching the query. */
-    find: (query?: FindQuery<D>) => T[];
     /** Updates an entity by its ID. */
     update: (id: number, data: Partial<D>) => T | null;
     /** Updates an entity if it exists (based on query conditions), otherwise inserts a new one. */

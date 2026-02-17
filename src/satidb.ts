@@ -51,8 +51,6 @@ type AugmentedEntity<S extends z.ZodType<any>> = InferSchema<S> & {
 type OneToManyRelationship<S extends z.ZodType<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
   get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
-  findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
-  find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((filter: Partial<InferSchema<S>>, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null);
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id?: number) => void;
@@ -64,10 +62,6 @@ type OneToManyRelationship<S extends z.ZodType<any>> = {
 type EntityAccessor<S extends z.ZodType<any>> = {
   insert: (data: EntityData<S>) => AugmentedEntity<S>;
   get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
-  findMany: (options: { where?: Record<string, any>; orderBy?: Record<string, 'asc' | 'desc'>; take?: number }) => AugmentedEntity<S>[];
-  findUnique: (options: { where: Record<string, any> }) => AugmentedEntity<S> | null;
-  findOne: (conditions: Record<string, any>) => AugmentedEntity<S> | null;
-  find: (conditions?: Record<string, any>) => AugmentedEntity<S>[];
   update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((filter: Partial<InferSchema<S>>, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null);
   upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
   delete: (id: number) => void;
@@ -111,10 +105,6 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       const accessor: EntityAccessor<Schemas[typeof key]> = {
         insert: (data) => this.insert(entityName, data),
         get: (conditions) => this.get(entityName, conditions),
-        findMany: (options) => this.findMany(entityName, options),
-        findUnique: (options) => this.findUnique(entityName, options),
-        findOne: (conditions) => this.findOne(entityName, conditions),
-        find: (conditions) => this.find(entityName, conditions),
         update: (idOrFilter, data) => this.updateWithFilter(entityName, idOrFilter, data),
         upsert: (conditions, data) => this.upsert(entityName, data, conditions),
         delete: (id) => this.delete(entityName, id),
