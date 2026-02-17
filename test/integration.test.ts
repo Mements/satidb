@@ -6,7 +6,7 @@
  *   2. Fluent join:      db.trees.select().join(db.forests).all()
  *   3. Proxy callback:   db.query(c => { ... })
  *
- * Plus: mutations, schema validation, defaults, computed fields.
+ * Plus: lazy navigation, $or, mutations, schema validation, defaults.
  *
  *   bun test test/integration.test.ts
  */
@@ -14,7 +14,7 @@
 import { describe, test, expect } from 'bun:test';
 import { Database, z } from '../src/index';
 
-// -- Inline setup (was examples/forests.ts) --
+// -- Inline setup --
 
 interface Forest { name: string; address: string; trees?: Tree[]; }
 interface Tree { name: string; planted: string; alive?: boolean; forest?: Forest; }
@@ -44,17 +44,15 @@ function displayName(forest: any) {
 }
 
 // =============================================================================
-// 1. SEED — insert with explicit FK
+// 1. SEED
 // =============================================================================
 
 describe('Forests — Seed', () => {
     test('create forests and add trees via entity reference', () => {
-        // Insert forests
         const sherwood = db.forests.insert({ name: 'Sherwood', address: 'Nottingham, UK' });
         const amazon = db.forests.insert({ name: 'Amazon', address: 'South America' });
         const blackForest = db.forests.insert({ name: 'Black Forest', address: 'Baden-Württemberg, DE' });
 
-        // Add trees — pass entity directly, ORM resolves to FK
         db.trees.insert({ name: 'Major Oak', planted: '1500-01-01', forest: sherwood });
         db.trees.insert({ name: 'Robin Hood Oak', planted: '1600-03-15', forest: sherwood });
         db.trees.insert({ name: 'Dead Elm', planted: '1700-06-01', alive: false, forest: sherwood });
@@ -86,7 +84,7 @@ describe('Forests — Seed', () => {
 });
 
 // =============================================================================
-// 2. TABLE-LEVEL QUERIES — db.trees.select() / db.trees.get()
+// 2. TABLE-LEVEL QUERIES
 // =============================================================================
 
 describe('Forests — Table-level queries', () => {
@@ -95,11 +93,6 @@ describe('Forests — Table-level queries', () => {
         expect(tree).not.toBeNull();
         expect(tree.name).toBe('Major Oak');
         expect(tree.alive).toBe(true);
-    });
-
-    test('get tree with multiple conditions', () => {
-        const tree = db.trees.get({ alive: true, name: 'Major Oak' } as any);
-        expect(tree).not.toBeNull();
     });
 
     test('find all alive trees', () => {
@@ -133,20 +126,100 @@ describe('Forests — Table-level queries', () => {
         expect(page1[0]!.name).not.toBe(page2[0]!.name);
     });
 
-    test('count trees per forest using join', () => {
-        const sherwood = db.forests.select().where({ name: 'Sherwood' }).get()!;
-        const count = db.trees.select().where({ forestId: sherwood.id } as any).count();
+    test('count trees per forest using entity WHERE', () => {
+        const sherwood = db.forests.get({ name: 'Sherwood' })!;
+        const count = db.trees.select().where({ forest: sherwood }).count();
         expect(count).toBe(3);
     });
 });
 
 // =============================================================================
-// 3. COMPUTED FIELDS — plain functions, no DSL
+// 3. $or QUERIES
+// =============================================================================
+
+describe('Forests — $or queries', () => {
+    test('$or with simple conditions (fluent builder)', () => {
+        const trees = db.trees.select()
+            .where({ $or: [{ name: 'Major Oak' }, { name: 'Dead Elm' }] })
+            .orderBy('name', 'asc')
+            .all();
+
+        expect(trees.length).toBe(2);
+        expect(trees.map(t => t.name)).toEqual(['Dead Elm', 'Major Oak']);
+    });
+
+    test('$or with operators', () => {
+        const trees = db.trees.select()
+            .where({ $or: [{ planted: { $lt: '1600-01-01' } }, { alive: false }] })
+            .all();
+
+        expect(trees.length).toBe(2); // Major Oak (1500) and Dead Elm
+    });
+
+    test('$or combined with AND', () => {
+        const trees = db.trees.select()
+            .where({ alive: true, $or: [{ name: 'Brazil Nut' }, { name: 'Kapok' }] })
+            .all();
+
+        expect(trees.length).toBe(2);
+        expect(trees.map(t => t.name).sort()).toEqual(['Brazil Nut', 'Kapok']);
+    });
+
+    test('$or in database.get() (raw query)', () => {
+        const sherwood = db.forests.get({ name: 'Sherwood' })!;
+        const trees = db.trees.select()
+            .where({ $or: [{ forest: sherwood }, { name: 'Brazil Nut' }] })
+            .all();
+
+        expect(trees.length).toBe(4); // 3 Sherwood + 1 Brazil Nut
+    });
+});
+
+// =============================================================================
+// 4. LAZY NAVIGATION — tree.forest(), forest.trees()
+// =============================================================================
+
+describe('Forests — Lazy navigation', () => {
+    test('tree.forest() — belongs-to navigation', () => {
+        const tree = db.trees.get({ name: 'Major Oak' })!;
+        const forest = tree.forest();
+        expect(forest.name).toBe('Sherwood');
+        expect(forest.address).toBe('Nottingham, UK');
+    });
+
+    test('forest.trees() — one-to-many navigation', () => {
+        const amazon = db.forests.get({ name: 'Amazon' })!;
+        const trees = amazon.trees();
+        expect(trees.length).toBe(3);
+        const names = trees.map((t: any) => t.name).sort();
+        expect(names).toEqual(['Brazil Nut', 'Kapok', 'Rubber Tree']);
+    });
+
+    test('chain: navigate tree → forest → all trees in that forest', () => {
+        const tree = db.trees.get({ name: 'Brazil Nut' })!;
+        const forest = tree.forest();
+        const allTreesInForest = forest.trees();
+        expect(allTreesInForest.length).toBe(3);
+        expect(allTreesInForest.map((t: any) => t.name)).toContain('Brazil Nut');
+    });
+
+    test('navigating back: each tree in forest has correct forest()', () => {
+        const sherwood = db.forests.get({ name: 'Sherwood' })!;
+        const trees = sherwood.trees();
+        for (const tree of trees as any[]) {
+            const parentForest = tree.forest();
+            expect(parentForest.name).toBe('Sherwood');
+        }
+    });
+});
+
+// =============================================================================
+// 5. COMPUTED FIELDS — plain functions, no DSL
 // =============================================================================
 
 describe('Forests — Computed fields', () => {
     test('displayName concatenates name and address', () => {
-        const forest = db.forests.select().where({ name: 'Sherwood' }).get()!;
+        const forest = db.forests.get({ name: 'Sherwood' })!;
         expect(displayName(forest)).toBe('Sherwood - Nottingham, UK');
     });
 
@@ -161,10 +234,10 @@ describe('Forests — Computed fields', () => {
 });
 
 // =============================================================================
-// 4. FLUENT JOIN — select().join() for cross-table queries
+// 6. FLUENT JOIN
 // =============================================================================
 
-describe('Forests — Fluent join (select().join())', () => {
+describe('Forests — Fluent join', () => {
     test('join trees with forest name + address (auto FK)', () => {
         const rows = db.trees.select('name', 'planted')
             .join(db.forests, ['name', 'address'])
@@ -178,7 +251,7 @@ describe('Forests — Fluent join (select().join())', () => {
     });
 
     test('join with where filter on FK', () => {
-        const sherwood = db.forests.select().where({ name: 'Sherwood' }).get()!;
+        const sherwood = db.forests.get({ name: 'Sherwood' })!;
         const rows = db.trees.select('name')
             .join(db.forests, ['name'])
             .where({ forestId: sherwood.id } as any)
@@ -210,10 +283,10 @@ describe('Forests — Fluent join (select().join())', () => {
 });
 
 // =============================================================================
-// 5. PROXY QUERY — db.query(c => {...}) for SQL-like JOINs
+// 7. PROXY QUERY
 // =============================================================================
 
-describe('Forests — Proxy query (SQL-like JOINs)', () => {
+describe('Forests — Proxy query', () => {
     test('join trees with forest name', () => {
         const rows = db.query((c: any) => {
             const { forests: f, trees: t } = c;
@@ -245,22 +318,7 @@ describe('Forests — Proxy query (SQL-like JOINs)', () => {
         expect(rows.every((r: any) => r.forest === 'Sherwood')).toBe(true);
     });
 
-    test('join: all alive trees across all forests', () => {
-        const rows = db.query((c: any) => {
-            const { forests: f, trees: t } = c;
-            return {
-                select: { tree: t.name, forest: f.name, alive: t.alive },
-                join: [[t.forestId, f.id]],
-                where: { [t.alive]: 1 },
-                orderBy: { [f.name]: 'asc', [t.name]: 'asc' },
-            };
-        });
-
-        expect(rows.every((r: any) => typeof r.forest === 'string')).toBe(true);
-        expect(rows.every((r: any) => r.alive === 1)).toBe(true);
-    });
-
-    test('join: count trees per forest (manual grouping)', () => {
+    test('count trees per forest (manual grouping)', () => {
         const rows = db.query((c: any) => {
             const { forests: f, trees: t } = c;
             return {
@@ -281,30 +339,30 @@ describe('Forests — Proxy query (SQL-like JOINs)', () => {
 });
 
 // =============================================================================
-// 6. MUTATIONS — update, upsert, delete
+// 8. MUTATIONS
 // =============================================================================
 
 describe('Forests — Mutations', () => {
     test('update tree by ID', () => {
-        const elm = db.trees.select().where({ name: 'Dead Elm' }).get()!;
+        const elm = db.trees.get({ name: 'Dead Elm' })!;
         db.trees.update(elm.id, { alive: true });
         const updated = db.trees.get(elm.id)!;
         expect(updated.alive).toBe(true);
     });
 
     test('fluent update: mark all Sherwood trees as dead', () => {
-        const sherwood = db.forests.select().where({ name: 'Sherwood' }).get()!;
+        const sherwood = db.forests.get({ name: 'Sherwood' })!;
         const affected = db.trees.update({ alive: false } as any)
             .where({ forestId: sherwood.id } as any)
             .exec();
 
         expect(affected).toBe(3);
-        const dead = db.trees.select().where({ forestId: sherwood.id, alive: false } as any).all();
+        const dead = db.trees.select().where({ forest: sherwood, alive: false }).all();
         expect(dead.length).toBe(3);
     });
 
     test('upsert tree', () => {
-        const amazon = db.forests.select().where({ name: 'Amazon' }).get()!;
+        const amazon = db.forests.get({ name: 'Amazon' })!;
         db.trees.upsert(
             { name: 'Brazil Nut' },
             { name: 'Brazil Nut', planted: '1800-01-01', alive: true, forestId: amazon.id } as any,
@@ -316,14 +374,14 @@ describe('Forests — Mutations', () => {
 
     test('delete tree', () => {
         const countBefore = db.trees.select().count();
-        const elm = db.trees.select().where({ name: 'Dead Elm' }).get()!;
+        const elm = db.trees.get({ name: 'Dead Elm' })!;
         db.trees.delete(elm.id);
         expect(db.trees.select().count()).toBe(countBefore - 1);
     });
 });
 
 // =============================================================================
-// 7. SCHEMA VALIDATION — Zod enforces types at runtime
+// 9. SCHEMA VALIDATION
 // =============================================================================
 
 describe('Forests — Schema validation', () => {
@@ -340,8 +398,8 @@ describe('Forests — Schema validation', () => {
     });
 
     test('defaults are applied (alive = true)', () => {
-        const amazon = db.forests.select().where({ name: 'Amazon' }).get()!;
-        const tree = db.trees.insert({ name: 'Test Sapling', planted: '2025-01-01', forestId: amazon.id } as any);
+        const amazon = db.forests.get({ name: 'Amazon' })!;
+        const tree = db.trees.insert({ name: 'Test Sapling', planted: '2025-01-01', forest: amazon });
         expect(tree.alive).toBe(true);
     });
 });

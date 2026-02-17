@@ -12,7 +12,7 @@ import { compileIQO, QueryBuilder } from '../src/query-builder';
 
 test('compileIQO: empty IQO produces SELECT * FROM table', () => {
     const { sql, params } = compileIQO('users', {
-        selects: [], wheres: [], whereAST: null,
+        selects: [], wheres: [], whereOrs: [], whereAST: null,
         limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toBe('SELECT users.* FROM users');
@@ -21,7 +21,7 @@ test('compileIQO: empty IQO produces SELECT * FROM table', () => {
 
 test('compileIQO: specific columns', () => {
     const { sql } = compileIQO('users', {
-        selects: ['name', 'age'], wheres: [], whereAST: null,
+        selects: ['name', 'age'], wheres: [], whereOrs: [], whereAST: null,
         limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toBe('SELECT users.name, users.age FROM users');
@@ -29,7 +29,7 @@ test('compileIQO: specific columns', () => {
 
 test('compileIQO: WHERE conditions', () => {
     const { sql, params } = compileIQO('users', {
-        selects: [], whereAST: null,
+        selects: [], whereAST: null, whereOrs: [],
         wheres: [
             { field: 'name', operator: '=', value: 'Alice' },
             { field: 'age', operator: '>', value: 18 },
@@ -42,7 +42,7 @@ test('compileIQO: WHERE conditions', () => {
 
 test('compileIQO: IN operator', () => {
     const { sql, params } = compileIQO('users', {
-        selects: [], whereAST: null,
+        selects: [], whereAST: null, whereOrs: [],
         wheres: [{ field: 'role', operator: 'IN', value: ['admin', 'mod'] }],
         limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
@@ -52,7 +52,7 @@ test('compileIQO: IN operator', () => {
 
 test('compileIQO: empty IN produces 1 = 0', () => {
     const { sql } = compileIQO('users', {
-        selects: [], whereAST: null,
+        selects: [], whereAST: null, whereOrs: [],
         wheres: [{ field: 'role', operator: 'IN', value: [] }],
         limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
@@ -61,7 +61,7 @@ test('compileIQO: empty IN produces 1 = 0', () => {
 
 test('compileIQO: ORDER BY, LIMIT, OFFSET', () => {
     const { sql } = compileIQO('users', {
-        selects: [], wheres: [], whereAST: null,
+        selects: [], wheres: [], whereOrs: [], whereAST: null,
         limit: 10, offset: 20,
         orderBy: [{ field: 'name', direction: 'asc' }],
         includes: [], raw: false, joins: [],
@@ -78,7 +78,7 @@ test('compileIQO: AST-based WHERE takes precedence over object wheres', () => {
             left: { type: 'column', name: 'age' },
             right: { type: 'literal', value: 30 },
         },
-        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [], whereOrs: [],
     });
     expect(sql).toContain('("age" = ?)');
     expect(sql).not.toContain('IGNORED');
@@ -88,7 +88,7 @@ test('compileIQO: AST-based WHERE takes precedence over object wheres', () => {
 test('compileIQO: Date values get ISO-stringified', () => {
     const d = new Date('2025-06-15T00:00:00Z');
     const { params } = compileIQO('events', {
-        selects: [], whereAST: null,
+        selects: [], whereAST: null, whereOrs: [],
         wheres: [{ field: 'createdAt', operator: '>', value: d }],
         limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });

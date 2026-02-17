@@ -1,6 +1,6 @@
 # sqlite-zod-orm
 
-Type-safe SQLite ORM for Bun. Define schemas with Zod, get a fully-typed database with **three ways to query**, automatic relationships, and zero SQL.
+Type-safe SQLite ORM for Bun. Define schemas with Zod, get a fully-typed database with **three ways to query**, automatic relationships, lazy navigation, and zero SQL.
 
 ```bash
 bun add sqlite-zod-orm
@@ -49,7 +49,22 @@ const total = db.trees.select().where({ alive: true }).count();
 const oak = db.trees.select().where({ name: 'Major Oak' }).get();
 ```
 
-**Operators:** `$gt` `$gte` `$lt` `$lte` `$ne` `$in`
+**Operators:** `$gt` `$gte` `$lt` `$lte` `$ne` `$in` `$or`
+
+#### `$or` — Disjunctive Filters
+
+```typescript
+// Find admins OR users with score > 50
+const results = db.users.select()
+  .where({ $or: [{ role: 'admin' }, { score: { $gt: 50 } }] })
+  .all();
+
+// $or can be combined with regular AND conditions
+const alive = db.trees.select()
+  .where({ alive: true, $or: [{ name: 'Oak' }, { name: 'Elm' }] })
+  .all();
+// → WHERE alive = 1 AND (name = 'Oak' OR name = 'Elm')
+```
 
 ### 2. Fluent Join — `select().join(db.table).all()`
 
@@ -85,38 +100,53 @@ const rows = db.query(c => {
 
 ## Relationships
 
-Define with `z.lazy()`. The ORM auto-creates FK columns and indexes. Use `.join()` or `db.query()` for cross-table queries.
+Define with `z.lazy()`. The ORM auto-creates FK columns and indexes.
 
 ```typescript
-interface Author { name: string; posts?: Post[]; }
-interface Post { title: string; author?: Author; }
+interface Author { name: string; books?: Book[]; }
+interface Book { title: string; author?: Author; }
 
 const AuthorSchema: z.ZodType<Author> = z.object({
   name: z.string(),
-  posts: z.lazy(() => z.array(PostSchema)).optional(),    // one-to-many
+  books: z.lazy(() => z.array(BookSchema)).optional(),    // one-to-many
 });
 
-const PostSchema: z.ZodType<Post> = z.object({
+const BookSchema: z.ZodType<Book> = z.object({
   title: z.string(),
   author: z.lazy(() => AuthorSchema).optional(),          // belongs-to → auto authorId FK
 });
 ```
 
-**Querying across tables:**
+### Entity References in Insert & WHERE
+
+Pass entities directly — the ORM resolves to foreign keys automatically:
 
 ```typescript
-// Insert with explicit FK
-const alice = db.authors.insert({ name: 'Alice' });
-db.posts.insert({ title: 'Hello', authorId: alice.id });
+const tolstoy = db.authors.insert({ name: 'Leo Tolstoy' });
 
-// Fluent join (auto-infers FK from z.lazy)
-const rows = db.posts.select('title')
-  .join(db.authors, ['name'])
-  .all();
-// → [{ title: 'Hello', authors_name: 'Alice' }]
+// Insert — entity resolves to FK
+db.books.insert({ title: 'War and Peace', author: tolstoy });
 
-// Or just query the child table by FK
-const alicePosts = db.posts.select().where({ authorId: alice.id }).all();
+// WHERE — entity resolves to FK condition
+const books = db.books.select().where({ author: tolstoy }).all();
+const first = db.books.get({ author: tolstoy });
+```
+
+### Lazy Navigation
+
+Every relationship field becomes a callable method on returned entities:
+
+```typescript
+// belongs-to: book → author
+const book = db.books.get({ title: 'War and Peace' })!;
+const author = book.author();       // → { name: 'Leo Tolstoy', ... }
+
+// one-to-many: author → books
+const books = tolstoy.books();      // → [{ title: 'War and Peace' }, { title: 'Anna Karenina' }]
+
+// Chain navigation
+const book2 = db.books.get(1)!;
+const allByAuthor = book2.author().books();
 ```
 
 ---
@@ -237,15 +267,17 @@ test/                — unit + integration tests
 | Method | Description |
 |---|---|
 | `new Database(path, schemas, options?)` | Create database with Zod schemas |
-| `db.table.insert(data)` | Insert with validation |
+| `db.table.insert(data)` | Insert with validation; entities resolve to FKs |
 | `db.table.get(id \| filter)` | Get single row |
 | `db.table.update(id, data)` | Update by ID |
 | `db.table.update(data).where(filter).exec()` | Fluent update |
 | `db.table.upsert(match, data)` | Insert or update |
 | `db.table.delete(id)` | Delete by ID |
 | `db.table.select().where().orderBy().limit().offset().all()` | Fluent query |
+| `db.table.select().where({ $or: [...] })` | OR conditions |
 | `db.table.select().join(db.other, cols?).all()` | Fluent join (auto FK) |
 | `db.query(c => { ... })` | Proxy callback query |
+| `entity.relationship()` | Lazy navigation (read-only) |
 | `db.table.select().count()` | Count rows |
 | `db.table.select().subscribe(cb, opts)` | Smart polling |
 | `db.getChangesSince(version, table?)` | Change tracking |

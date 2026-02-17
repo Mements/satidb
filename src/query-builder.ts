@@ -29,6 +29,7 @@ interface JoinClause {
 interface IQO {
     selects: string[];
     wheres: WhereCondition[];
+    whereOrs: WhereCondition[][];  // Each sub-array is an OR group
     whereAST: ASTNode | null;
     joins: JoinClause[];
     limit: number | null;
@@ -108,6 +109,31 @@ export function compileIQO(tableName: string, iqo: IQO): { sql: string; params: 
         sql += ` WHERE ${whereParts.join(' AND ')}`;
     }
 
+    // Append OR groups (from $or)
+    if (iqo.whereOrs.length > 0) {
+        for (const orGroup of iqo.whereOrs) {
+            const orParts: string[] = [];
+            for (const w of orGroup) {
+                if (w.operator === 'IN') {
+                    const arr = w.value as any[];
+                    if (arr.length === 0) {
+                        orParts.push('1 = 0');
+                    } else {
+                        orParts.push(`${w.field} IN (${arr.map(() => '?').join(', ')})`);
+                        params.push(...arr.map(transformValueForStorage));
+                    }
+                } else {
+                    orParts.push(`${w.field} ${w.operator} ?`);
+                    params.push(transformValueForStorage(w.value));
+                }
+            }
+            if (orParts.length > 0) {
+                const orClause = `(${orParts.join(' OR ')})`;
+                sql += sql.includes(' WHERE ') ? ` AND ${orClause}` : ` WHERE ${orClause}`;
+            }
+        }
+    }
+
     // ORDER BY clause
     if (iqo.orderBy.length > 0) {
         const parts = iqo.orderBy.map(o => `${o.field} ${o.direction.toUpperCase()}`);
@@ -161,6 +187,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         this.iqo = {
             selects: [],
             wheres: [],
+            whereOrs: [],
             whereAST: null,
             joins: [],
             limit: null,
@@ -219,6 +246,28 @@ export class QueryBuilder<T extends Record<string, any>> {
 
             // Object-style: parse into IQO conditions
             for (const [key, value] of Object.entries(resolved)) {
+                // Handle $or: [{ field1: val1 }, { field2: val2 }]
+                if (key === '$or' && Array.isArray(value)) {
+                    const orConditions: WhereCondition[] = [];
+                    for (const branch of value as Record<string, any>[]) {
+                        const resolvedBranch = this.conditionResolver
+                            ? this.conditionResolver(branch)
+                            : branch;
+                        for (const [bKey, bValue] of Object.entries(resolvedBranch)) {
+                            if (typeof bValue === 'object' && bValue !== null && !Array.isArray(bValue) && !(bValue instanceof Date)) {
+                                for (const [opKey, operand] of Object.entries(bValue)) {
+                                    const sqlOp = OPERATOR_MAP[opKey as WhereOperator];
+                                    if (sqlOp) orConditions.push({ field: bKey, operator: sqlOp as WhereCondition['operator'], value: operand });
+                                }
+                            } else {
+                                orConditions.push({ field: bKey, operator: '=', value: bValue });
+                            }
+                        }
+                    }
+                    if (orConditions.length > 0) this.iqo.whereOrs.push(orConditions);
+                    continue;
+                }
+
                 if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
                     for (const [opKey, operand] of Object.entries(value)) {
                         const sqlOp = OPERATOR_MAP[opKey as WhereOperator];

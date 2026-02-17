@@ -338,6 +338,28 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
         augmented.update = (data: any) => this.update(entityName, entity.id, data);
         augmented.delete = () => this.delete(entityName, entity.id);
 
+        // Attach lazy relationship navigation
+        for (const rel of this.relationships) {
+            if (rel.from === entityName && rel.type === 'belongs-to') {
+                // book.author() → lazy load parent
+                augmented[rel.relationshipField] = () => {
+                    const fkValue = entity[rel.foreignKey];
+                    return fkValue ? this.get(rel.to, { id: fkValue }) : null;
+                };
+            } else if (rel.from === entityName && rel.type === 'one-to-many') {
+                // author.books() → lazy load children
+                const belongsToRel = this.relationships.find(
+                    r => r.type === 'belongs-to' && r.from === rel.to && r.to === rel.from
+                );
+                if (belongsToRel) {
+                    const fk = belongsToRel.foreignKey;
+                    augmented[rel.relationshipField] = () => {
+                        return this.find(rel.to, { [fk]: entity.id });
+                    };
+                }
+            }
+        }
+
         // Auto-persist proxy: setting a field auto-updates the DB row
         const storableFieldNames = new Set(getStorableFields(this.schemas[entityName]!).map(f => f.name));
         return new Proxy(augmented, {
@@ -385,7 +407,23 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
         const resolvedConditions = this.resolveEntityConditions(conditions);
 
         for (const key in resolvedConditions) {
-            if (key.startsWith('$')) continue;
+            if (key.startsWith('$')) {
+                // Handle $or
+                if (key === '$or' && Array.isArray(resolvedConditions[key])) {
+                    const orBranches = resolvedConditions[key] as Record<string, any>[];
+                    const orParts: string[] = [];
+                    for (const branch of orBranches) {
+                        const sub = this.buildWhereClause(branch, tablePrefix);
+                        if (sub.clause) {
+                            // Strip the leading "WHERE " from the sub-clause
+                            orParts.push(`(${sub.clause.replace(/^WHERE /, '')})`);
+                            values.push(...sub.values);
+                        }
+                    }
+                    if (orParts.length > 0) parts.push(`(${orParts.join(' OR ')})`);
+                }
+                continue;
+            }
             const value = resolvedConditions[key];
             const fieldName = tablePrefix ? `${tablePrefix}.${key}` : key;
 
@@ -400,7 +438,7 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
                     if (!Array.isArray(operand)) throw new Error(`$in for '${key}' requires an array`);
                     if (operand.length === 0) { parts.push('1 = 0'); continue; }
                     parts.push(`${fieldName} IN (${operand.map(() => '?').join(', ')})`);
-                    values.push(...operand.map(v => transformForStorage({ v }).v));
+                    values.push(...operand.map((v: any) => transformForStorage({ v }).v));
                     continue;
                 }
 

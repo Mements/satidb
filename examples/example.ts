@@ -5,8 +5,10 @@
  *  - Schema definition with Zod validation & defaults
  *  - Insert, get, update, delete (CRUD)
  *  - Fluent select().where().orderBy() queries
- *  - Query operators ($gt, $in, $ne, $lt, $gte)
+ *  - Query operators ($gt, $in, $ne, $lt, $gte, $or)
  *  - z.lazy() relationships with auto FK columns
+ *  - Lazy navigation: book.author(), author.books()
+ *  - Entity references in insert & WHERE
  *  - Fluent .join() for cross-table queries
  *  - Proxy callback db.query() for SQL-like JOINs
  *  - Upsert, transactions, pagination
@@ -81,7 +83,6 @@ console.log('Get by filter:', admin?.name); // → 'Alice'
 
 // Update by ID
 alice.update({ score: 200 });
-
 console.log('Updated score:', db.users.get(1)?.score); // → 200
 
 // Fluent update with WHERE
@@ -93,7 +94,7 @@ db.users.delete(carol.id);
 console.log('After delete, total:', db.users.select().count());
 
 // =============================================================================
-// 4. FLUENT QUERIES — select().where().orderBy()
+// 4. FLUENT QUERIES — select().where().orderBy() + $or
 // =============================================================================
 
 console.log('\n── 2. Fluent Queries ──');
@@ -114,24 +115,24 @@ const specific = db.users.select()
     .all();
 console.log('In-query:', specific.map(u => u.name));
 
-const total = db.users.select().count();
-console.log('Total users:', total);
-
-const first = db.users.select().orderBy('name', 'asc').get();
-console.log('First alphabetically:', first?.name);
+// $or — find admins OR high scorers
+const adminsOrHighScore = db.users.select()
+    .where({ $or: [{ role: 'admin' }, { score: { $gt: 50 } }] })
+    .all();
+console.log('Admins or high scorers:', adminsOrHighScore.map(u => `${u.name} (${u.role}, ${u.score})`));
 
 // =============================================================================
-// 5. RELATIONSHIPS — z.lazy() auto FK + join queries
+// 5. RELATIONSHIPS — z.lazy() auto FK + entity references
 // =============================================================================
 
-console.log('\n── 3. Relationships (z.lazy → auto FK) ──');
+console.log('\n── 3. Relationships ──');
 
 // Insert authors
 const tolstoy = db.authors.insert({ name: 'Leo Tolstoy', country: 'Russia' });
 const dostoevsky = db.authors.insert({ name: 'Fyodor Dostoevsky', country: 'Russia' });
 const kafka = db.authors.insert({ name: 'Franz Kafka', country: 'Czech Republic' });
 
-// Insert books — pass the entity directly, ORM resolves to FK
+// Insert books — pass entity directly, ORM resolves to FK
 db.books.insert({ title: 'War and Peace', year: 1869, pages: 1225, author: tolstoy });
 db.books.insert({ title: 'Anna Karenina', year: 1878, pages: 864, author: tolstoy });
 db.books.insert({ title: 'Crime and Punishment', year: 1866, pages: 671, author: dostoevsky });
@@ -140,18 +141,35 @@ db.books.insert({ title: 'The Trial', year: 1925, pages: 255, author: kafka });
 
 console.log(`Seeded ${db.authors.select().count()} authors, ${db.books.select().count()} books`);
 
-// Query with entity reference — { author: tolstoy } → WHERE authorId = tolstoy.id
+// Query with entity reference in WHERE
 const tolstoyBooks = db.books.select().where({ author: tolstoy }).all();
 console.log('Tolstoy books:', tolstoyBooks.map(b => b.title));
 
-const firstDostoevsky = db.books.get({ author: dostoevsky });
-console.log('First Dostoevsky:', firstDostoevsky?.title);
-
 // =============================================================================
-// 6. FLUENT JOIN — select().join() with auto FK inference
+// 6. LAZY NAVIGATION — book.author(), author.books()
 // =============================================================================
 
-console.log('\n── 4. Fluent Join ──');
+console.log('\n── 4. Lazy Navigation ──');
+
+// belongs-to: book → author
+const warAndPeace = db.books.get({ title: 'War and Peace' })!;
+const bookAuthor = warAndPeace.author();
+console.log(`"${warAndPeace.title}" by ${bookAuthor.name} (${bookAuthor.country})`);
+
+// one-to-many: author → books
+const dostoevskyBooks = dostoevsky.books();
+console.log(`Dostoevsky's books: ${dostoevskyBooks.map((b: any) => b.title).join(', ')}`);
+
+// Chain: get author, then their books
+const kafkaEntity = db.authors.get({ name: 'Franz Kafka' })!;
+const kafkaBooks = kafkaEntity.books();
+console.log(`Kafka's books: ${kafkaBooks.map((b: any) => b.title).join(', ')}`);
+
+// =============================================================================
+// 7. FLUENT JOIN — select().join() with auto FK inference
+// =============================================================================
+
+console.log('\n── 5. Fluent Join ──');
 
 const booksWithAuthors = db.books.select('title', 'year', 'pages')
     .join(db.authors, ['name', 'country'])
@@ -171,19 +189,11 @@ const longBooks = db.books.select('title', 'pages')
     .all();
 console.log('Long books:', longBooks.map((b: any) => `${b.title} (${b.pages}p) by ${b.authors_name}`));
 
-// Pagination
-const page1 = db.books.select('title')
-    .join(db.authors, ['name'])
-    .orderBy('year', 'asc')
-    .limit(2)
-    .all();
-console.log('Page 1 (2 books):', page1.map((b: any) => b.title));
-
 // =============================================================================
-// 7. PROXY CALLBACK — db.query() for SQL-like JOINs
+// 8. PROXY CALLBACK — db.query() for SQL-like JOINs
 // =============================================================================
 
-console.log('\n── 5. Proxy Callback (SQL-like) ──');
+console.log('\n── 6. Proxy Callback (SQL-like) ──');
 
 const russianBooks = db.query((c) => {
     const { authors: a, books: b } = c;
@@ -212,19 +222,17 @@ const latest = db.query((c) => {
 console.log('Latest 2 books:', latest.map((r: any) => `${r.title} (${r.year})`));
 
 // =============================================================================
-// 8. UPSERT & TRANSACTIONS
+// 9. UPSERT & TRANSACTIONS
 // =============================================================================
 
-console.log('\n── 6. Upsert & Transactions ──');
+console.log('\n── 7. Upsert & Transactions ──');
 
-// Upsert: update if exists, insert if not
 db.users.upsert({ email: 'bob@example.com' }, { name: 'Bob', email: 'bob@example.com', role: 'moderator', score: 80 });
-console.log('Bob after upsert:', db.users.get({ email: 'bob@example.com' })?.role); // → 'moderator'
+console.log('Bob after upsert:', db.users.get({ email: 'bob@example.com' })?.role);
 
 db.users.upsert({ email: 'dave@example.com' }, { name: 'Dave', email: 'dave@example.com' });
 console.log('Dave inserted via upsert:', db.users.get({ email: 'dave@example.com' })?.name);
 
-// Transaction (atomic)
 db.transaction(() => {
     db.users.insert({ name: 'Eve', email: 'eve@example.com', role: 'member', score: 50 });
     db.users.update({ score: 999 }).where({ name: 'Alice' }).exec();
@@ -233,10 +241,10 @@ console.log('After transaction — Alice score:', db.users.get({ name: 'Alice' }
 console.log('After transaction — Eve exists:', !!db.users.get({ name: 'Eve' }));
 
 // =============================================================================
-// 9. SCHEMA VALIDATION — Zod enforces at runtime
+// 10. SCHEMA VALIDATION
 // =============================================================================
 
-console.log('\n── 7. Schema Validation ──');
+console.log('\n── 8. Schema Validation ──');
 
 try {
     db.users.insert({ name: '', email: 'bad', role: 'test', score: 0 });
