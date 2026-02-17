@@ -220,6 +220,33 @@ export type OneToManyAccessor<T, D> = {
   push: (data: D) => T;
 };
 
+/** Fluent query builder for constructing SQL queries with chaining. */
+export type QueryBuilder<T> = {
+    /** Specify columns to select. If called with no args, defaults to *. */
+    select: (...cols: string[]) => QueryBuilder<T>;
+    /** Add WHERE conditions with optional operators ($gt, $gte, $lt, $lte, $ne, $in). */
+    where: (criteria: Record<string, any>) => QueryBuilder<T>;
+    /** Set maximum number of rows to return. */
+    limit: (n: number) => QueryBuilder<T>;
+    /** Set offset for pagination. */
+    offset: (n: number) => QueryBuilder<T>;
+    /** Add ORDER BY clause. */
+    orderBy: (field: string, direction?: 'asc' | 'desc') => QueryBuilder<T>;
+    /** Skip Zod parsing and return raw SQLite rows. */
+    raw: () => QueryBuilder<T>;
+    /** Execute query and return all matching rows. */
+    all: () => T[];
+    /** Execute query and return first matching row, or null. */
+    get: () => T | null;
+    /** Execute query and return count of matching rows. */
+    count: () => number;
+    /** Thenable — allows await on the builder to get all results. */
+    then: <TResult1 = T[], TResult2 = never>(
+        onfulfilled?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | null,
+        onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
+    ) => Promise<TResult1 | TResult2>;
+};
+
 /** Describes a top-level accessor on the DB object (e.g., db.authors). */
 export type EntityAccessor<T, D> = {
     /** Inserts a new entity. */
@@ -242,8 +269,10 @@ export type EntityAccessor<T, D> = {
     delete: (id: number) => void;
     /** Subscribes to database events ('insert', 'update', 'delete') for this entity type. */
     subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
-    /** Unsubscribes from database events ('insert', 'update', 'delete') for this entity type. */
+    /** Unsubscribes from database events ('insert' | 'update' | 'delete') for this entity type. */
     unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: T) => void) => void;
+    /** Fluent query builder: db.users.select().where({ level: 10 }).limit(5).all() */
+    select: (...cols: (keyof D & string)[]) => QueryBuilder<T>;
 };
 \n`;
 

@@ -1,6 +1,8 @@
 import { Database } from 'bun:sqlite';
 import { EventEmitter } from 'events';
 import { z } from 'zod';
+import { QueryBuilder } from './query-builder';
+import { executeProxyQuery, type ProxyQueryResult } from './proxy-query';
 
 type ZodType = z.ZodTypeAny;
 type SchemaMap = Record<string, z.ZodObject<any>>;
@@ -57,6 +59,8 @@ type EntityAccessor<S extends z.ZodObject<any>> = {
   delete: (id: number) => void;
   subscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
   unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
+  /** Fluent query builder: `db.users.select().where({ level: 10 }).limit(5).all()` */
+  select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
 };
 
 type TypedAccessors<T extends SchemaMap> = {
@@ -97,6 +101,7 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         delete: (id) => this.delete(entityName, id),
         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
         unsubscribe: (event, callback) => this.unsubscribe(event, entityName, callback),
+        select: (...cols: string[]) => this._createQueryBuilder(entityName, cols),
       };
       (this as any)[key] = accessor;
     });
@@ -754,7 +759,7 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
 
     if (belongsToIncludes.length > 0) {
       const { sql, values, joinedTables } = this.buildJoinQuery(entityName, otherConditions, belongsToIncludes);
-      console.log(`[Performance] Using JOIN query: ${sql}`);
+      // JOIN query for belongs-to includes
       const rows = this.db.query(sql).all(...values);
       const result = this.parseJoinResults(rows, entityName, joinedTables);
       entities = result.entities;
@@ -776,7 +781,7 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
     }
 
     if (oneToManyIncludes.length > 0) {
-      console.log(`[Performance] Using batch query for one-to-many: ${oneToManyIncludes.join(', ')}`);
+      // Batch query for one-to-many includes
       const oneToManyData = this.loadOneToManyIncludes(entityName, entities, oneToManyIncludes);
       includedDataArray = includedDataArray.map((includedData, index) => ({
         ...includedData,
@@ -872,6 +877,64 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       this.subscriptions[event][entityName] = this.subscriptions[event][entityName].filter(cb => cb !== callback);
     }
   }
+
+  // ================== Fluent Query Builder API ==================
+
+  /**
+   * Creates a QueryBuilder instance bound to a specific table.
+   * The executor callbacks wire the builder to the real DB and schema parsing.
+   */
+  private _createQueryBuilder(entityName: string, initialCols: string[]): QueryBuilder<any> {
+    const schema = this.schemas[entityName]!;
+
+    const executor = (sql: string, params: any[], raw: boolean): any[] => {
+      const rows = this.db.query(sql).all(...params);
+      if (raw) return rows;
+      return rows.map((row: any) => {
+        const entity = this.transformFromStorage(row as any, schema);
+        return this._attachMethods(entityName, entity);
+      });
+    };
+
+    const singleExecutor = (sql: string, params: any[], raw: boolean): any | null => {
+      const results = executor(sql, params, raw);
+      return results.length > 0 ? results[0] : null;
+    };
+
+    const builder = new QueryBuilder(entityName, executor, singleExecutor);
+    if (initialCols.length > 0) {
+      builder.select(...initialCols);
+    }
+    return builder;
+  }
+
+  // ================== Proxy Callback Query API ==================
+
+  /**
+   * Execute a complex query using the Proxy Callback pattern ("Midnight" style).
+   *
+   * ```ts
+   * const results = db.query(c => {
+   *   const { users: u, posts: p } = c;
+   *   return {
+   *     select: { ...u, postTitle: p.title },
+   *     join: [u.id, p.authorId],
+   *     where: { [u.name]: 'Alice' },
+   *   };
+   * });
+   * ```
+   */
+  public query<T extends Record<string, any> = Record<string, any>>(
+    callback: (ctx: { [K in keyof Schemas]: Record<string, any> }) => ProxyQueryResult
+  ): T[] {
+    return executeProxyQuery(
+      this.schemas,
+      callback as any,
+      (sql: string, params: any[]) => {
+        return this.db.query(sql).all(...params) as T[];
+      },
+    );
+  }
 }
 
 // Re-export the class with proper typing so `new SatiDB(...)` returns entity accessors
@@ -880,3 +943,5 @@ type SatiDB<S extends SchemaMap> = _SatiDB<S> & TypedAccessors<S>;
 
 export type DB<S extends SchemaMap> = SatiDB<S>;
 export { SatiDB, z };
+export { QueryBuilder } from './query-builder';
+export { ColumnNode, type ProxyQueryResult } from './proxy-query';
