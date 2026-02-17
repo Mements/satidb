@@ -79,6 +79,8 @@ type EntityAccessor<S extends z.ZodType<any>> = {
   unsubscribe: (event: 'insert' | 'update' | 'delete', callback: (data: AugmentedEntity<S>) => void) => void;
   /** Fluent query builder: `db.users.select().where({ level: 10 }).limit(5).all()` */
   select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
+  /** Table name for this accessor — used by `.join()` */
+  _tableName: string;
 };
 
 type TypedAccessors<T extends SchemaMap> = {
@@ -126,6 +128,7 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
         subscribe: (event, callback) => this.subscribe(event, entityName, callback),
         unsubscribe: (event, callback) => this.unsubscribe(event, entityName, callback),
         select: (...cols: string[]) => this._createQueryBuilder(entityName, cols),
+        _tableName: entityName,
       };
       (this as any)[key] = accessor;
     });
@@ -1100,7 +1103,21 @@ class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
       return results.length > 0 ? results[0] : null;
     };
 
-    const builder = new QueryBuilder(entityName, executor, singleExecutor);
+    const joinResolver = (fromTable: string, toTable: string): { fk: string; pk: string } | null => {
+      // Check if fromTable has a belongs-to to toTable
+      const belongsTo = this.relationships.find(
+        r => r.type === 'belongs-to' && r.from === fromTable && r.to === toTable
+      );
+      if (belongsTo) return { fk: belongsTo.foreignKey, pk: 'id' };
+      // Check reverse: toTable has belongs-to fromTable
+      const reverse = this.relationships.find(
+        r => r.type === 'belongs-to' && r.from === toTable && r.to === fromTable
+      );
+      if (reverse) return { fk: 'id', pk: reverse.foreignKey };
+      return null;
+    };
+
+    const builder = new QueryBuilder(entityName, executor, singleExecutor, joinResolver);
     if (initialCols.length > 0) {
       builder.select(...initialCols);
     }

@@ -15,10 +15,18 @@ interface WhereCondition {
     value: any;
 }
 
+interface JoinClause {
+    table: string;
+    fromCol: string;
+    toCol: string;
+    columns: string[];   // columns to SELECT from the joined table
+}
+
 interface IQO {
     selects: string[];
     wheres: WhereCondition[];
     whereAST: ASTNode | null;
+    joins: JoinClause[];
     limit: number | null;
     offset: number | null;
     orderBy: { field: string; direction: OrderDirection }[];
@@ -49,11 +57,27 @@ export function compileIQO(tableName: string, iqo: IQO): { sql: string; params: 
     const params: any[] = [];
 
     // SELECT clause
-    const selectClause = iqo.selects.length > 0
-        ? iqo.selects.map(s => `${tableName}.${s}`).join(', ')
-        : `${tableName}.*`;
+    const selectParts: string[] = [];
+    if (iqo.selects.length > 0) {
+        selectParts.push(...iqo.selects.map(s => `${tableName}.${s}`));
+    } else {
+        selectParts.push(`${tableName}.*`);
+    }
+    // Add columns from joins
+    for (const j of iqo.joins) {
+        if (j.columns.length > 0) {
+            selectParts.push(...j.columns.map(c => `${j.table}.${c} AS ${j.table}_${c}`));
+        } else {
+            selectParts.push(`${j.table}.*`);
+        }
+    }
 
-    let sql = `SELECT ${selectClause} FROM ${tableName}`;
+    let sql = `SELECT ${selectParts.join(', ')} FROM ${tableName}`;
+
+    // JOIN clauses
+    for (const j of iqo.joins) {
+        sql += ` JOIN ${j.table} ON ${tableName}.${j.fromCol} = ${j.table}.${j.toCol}`;
+    }
 
     // WHERE clause — AST-based takes precedence if set
     if (iqo.whereAST) {
@@ -115,19 +139,23 @@ export class QueryBuilder<T extends Record<string, any>> {
     private tableName: string;
     private executor: (sql: string, params: any[], raw: boolean) => any[];
     private singleExecutor: (sql: string, params: any[], raw: boolean) => any | null;
+    private joinResolver: ((fromTable: string, toTable: string) => { fk: string; pk: string } | null) | null;
 
     constructor(
         tableName: string,
         executor: (sql: string, params: any[], raw: boolean) => any[],
         singleExecutor: (sql: string, params: any[], raw: boolean) => any | null,
+        joinResolver?: ((fromTable: string, toTable: string) => { fk: string; pk: string } | null) | null,
     ) {
         this.tableName = tableName;
         this.executor = executor;
         this.singleExecutor = singleExecutor;
+        this.joinResolver = joinResolver ?? null;
         this.iqo = {
             selects: [],
             wheres: [],
             whereAST: null,
+            joins: [],
             limit: null,
             offset: null,
             orderBy: [],
@@ -218,6 +246,50 @@ export class QueryBuilder<T extends Record<string, any>> {
      */
     orderBy(field: keyof T & string, direction: OrderDirection = 'asc'): this {
         this.iqo.orderBy.push({ field, direction });
+        return this;
+    }
+
+    /**
+     * Join another table. Two calling styles:
+     *
+     * **Accessor-based** (auto-infers FK from relationships):
+     * ```ts
+     * db.trees.select('name').join(db.forests, ['name']).all()
+     * // → [{ name: 'Oak', forests_name: 'Sherwood' }]
+     * ```
+     *
+     * **String-based** (manual FK):
+     * ```ts
+     * db.trees.select('name').join('forests', 'forestId', ['name']).all()
+     * ```
+     */
+    join(tableOrAccessor: string | { _tableName: string }, fkOrCols?: string | string[], colsOrPk?: string[] | string, pk?: string): this {
+        let table: string;
+        let fromCol: string;
+        let toCol: string;
+        let columns: string[];
+
+        if (typeof tableOrAccessor === 'object' && '_tableName' in tableOrAccessor) {
+            // Accessor-based: .join(db.forests, ['name', 'address'])
+            table = tableOrAccessor._tableName;
+            columns = Array.isArray(fkOrCols) ? fkOrCols : [];
+
+            // Auto-resolve FK from relationships
+            if (!this.joinResolver) throw new Error(`Cannot auto-resolve join: no relationship data available`);
+            const resolved = this.joinResolver(this.tableName, table);
+            if (!resolved) throw new Error(`No relationship found between '${this.tableName}' and '${table}'`);
+            fromCol = resolved.fk;
+            toCol = resolved.pk;
+        } else {
+            // String-based: .join('forests', 'forestId', ['name'], 'id')
+            table = tableOrAccessor;
+            fromCol = fkOrCols as string;
+            columns = Array.isArray(colsOrPk) ? colsOrPk : [];
+            toCol = (typeof colsOrPk === 'string' ? colsOrPk : pk) ?? 'id';
+        }
+
+        this.iqo.joins.push({ table, fromCol, toCol, columns });
+        this.iqo.raw = true;
         return this;
     }
 

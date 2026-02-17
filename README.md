@@ -1,314 +1,322 @@
-# SatiDB 🗄️
+# sqlite-zod-orm
 
-A modern, type-safe SQLite wrapper with **reactive editing**, **automatic relationships**, and **fluent APIs**. Built for TypeScript/JavaScript with Zod schema validation.
+Type-safe SQLite ORM for Bun. Define Zod schemas, get a fully-typed database with fluent queries, change tracking, and zero SQL.
 
-## ✨ Key Features
+## Install
 
-- **🔄 Reactive Editing**: Change properties directly, auto-persists to database
-- **📊 Type-Safe Schemas**: Powered by Zod for runtime validation
-- **🔗 Automatic Relationships**: Belongs-to, one-to-many, many-to-many support
-- **📺 Event Subscriptions**: Listen to insert/update/delete events
-- **🏗️ Explicit Junction Tables**: Full control over many-to-many relationships
-- **🚀 Fluent API**: Intuitive, chainable operations
-- **⚡ Zero-Config**: Works with Bun SQLite out of the box
+```bash
+bun add sqlite-zod-orm
+```
 
-## 🚀 Quick Start
+## 30-Second Example
 
 ```typescript
-import { MyDatabase, z } from './satidb';
+import { SatiDB, z } from 'sqlite-zod-orm';
 
-// Define schemas with relationships
+const db = new SatiDB(':memory:', {
+  users: z.object({
+    name: z.string(),
+    email: z.string(),
+    role: z.enum(['admin', 'user']),
+  }),
+});
+
+// Insert
+const alice = db.users.insert({ name: 'Alice', email: 'alice@co.dev', role: 'admin' });
+
+// Query
+const admins = db.users.select().where({ role: 'admin' }).all();
+const first  = db.users.select().where({ email: 'alice@co.dev' }).get();
+const count  = db.users.select().where({ role: 'user' }).count();
+
+// Update
+db.users.update(alice.id, { name: 'Alice Smith' });               // by ID
+db.users.update({ role: 'user' }).where({ name: 'Alice' }).exec(); // fluent
+
+// Upsert
+db.users.upsert({ email: 'alice@co.dev' }, { name: 'Alice S.', email: 'alice@co.dev', role: 'admin' });
+
+// Delete
+db.users.delete(alice.id);
+```
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Zod schemas** | Define tables with `z.object()` — runtime validation on every insert/update |
+| **Fluent `select()`** | `.where()` `.orderBy()` `.limit()` `.offset()` `.count()` `.get()` `.all()` |
+| **Fluent `update()`** | `update(data).where(filter).exec()` — single SQL query, no round-trips |
+| **Upsert** | Insert-or-update with `upsert(match, data)` |
+| **Indexes** | Single and composite indexes, declared in config |
+| **Change tracking** | SQLite triggers log every INSERT/UPDATE/DELETE with timestamps |
+| **Events** | `subscribe('insert' \| 'update' \| 'delete', callback)` per entity |
+| **Zero config** | Works with Bun's built-in SQLite. No migrations, no CLI |
+
+## Query API
+
+Everything goes through `select()` — one fluent builder for all reads:
+
+```typescript
+// All rows
+db.users.select().all()
+
+// Filtered
+db.users.select().where({ role: 'admin' }).all()
+
+// Operators
+db.users.select().where({ age: { $gt: 18 } }).all()
+db.users.select().where({ status: { $in: ['active', 'trial'] } }).all()
+
+// Sorting + pagination
+db.users.select()
+  .where({ role: 'user' })
+  .orderBy('name', 'asc')
+  .limit(10)
+  .offset(20)
+  .all()
+
+// Single row
+db.users.select().where({ email: 'alice@co.dev' }).get()
+
+// Count
+db.users.select().where({ role: 'admin' }).count()
+```
+
+### Where Operators
+
+| Operator | SQL | Example |
+|----------|-----|---------|
+| `{ $gt: n }` | `>` | `{ age: { $gt: 18 } }` |
+| `{ $gte: n }` | `>=` | `{ score: { $gte: 90 } }` |
+| `{ $lt: n }` | `<` | `{ price: { $lt: 100 } }` |
+| `{ $lte: n }` | `<=` | `{ rating: { $lte: 3 } }` |
+| `{ $ne: v }` | `!=` | `{ status: { $ne: 'deleted' } }` |
+| `{ $in: [] }` | `IN` | `{ role: { $in: ['admin', 'mod'] } }` |
+
+## Update API
+
+Two patterns:
+
+```typescript
+// By ID — returns the updated entity
+const updated = db.users.update(id, { name: 'New Name' });
+
+// Fluent — single SQL query, returns affected row count
+const affected = db.users.update({ role: 'user' })
+  .where({ lastLogin: { $lt: cutoff } })
+  .exec();
+```
+
+## Indexes
+
+Declare in options — single column or composite:
+
+```typescript
+const db = new SatiDB('app.db', schemas, {
+  indexes: {
+    users: ['email', 'role'],                  // two single-column indexes
+    orders: ['userId', ['userId', 'status']],  // single + composite
+  },
+});
+```
+
+## Change Tracking
+
+Enable trigger-based tracking for polling/sync patterns:
+
+```typescript
+const db = new SatiDB('app.db', schemas, {
+  changeTracking: true,
+});
+
+// Get all changes since sequence number 0
+const changes = db.getChangesSince(0);
+// [{ id: 1, table_name: 'users', row_id: 1, action: 'INSERT', timestamp: '...' }, ...]
+
+// Filter by table
+const userChanges = db.getChangesSince(lastSeq, 'users');
+```
+
+## Relationships
+
+Define with `z.lazy()` refs — SatiDB auto-detects belongs-to and one-to-many from your schemas:
+
+```typescript
+import { SatiDB, z } from 'sqlite-zod-orm';
+
 const AuthorSchema = z.object({
   name: z.string(),
-  posts: z.lazy(() => z.array(PostSchema)).optional(),
+  posts: z.lazy(() => z.array(PostSchema)).optional(),   // one-to-many
 });
 
 const PostSchema = z.object({
   title: z.string(),
   content: z.string(),
-  author: z.lazy(() => AuthorSchema).optional(),
+  author: z.lazy(() => AuthorSchema).optional(),          // belongs-to
 });
 
-// Create database
-const db = new MyDatabase(':memory:', {
+const db = new SatiDB(':memory:', {
   authors: AuthorSchema,
   posts: PostSchema,
 });
 
-// Use it!
-const author = db.authors.insert({ name: 'Jane Doe' });
+// Insert an author
+const author = db.authors.insert({ name: 'Alice' });
+
+// Add a post via the relationship (auto-sets authorId foreign key)
 const post = author.posts.push({ title: 'Hello World', content: '...' });
 
-// Reactive editing - just change properties!
-post.title = 'Hello TypeScript'; // Automatically saved to DB
+// Navigate back: belongs-to returns a callable
+const postAuthor = post.author();   // => { id: 1, name: 'Alice', ... }
+
+// Query children through the relationship
+const allPosts = author.posts.find();
+const firstPost = author.posts.get(1);
 ```
 
-## 📖 Core Concepts
+**How it works:**
+- `z.lazy(() => z.array(Schema))` → **one-to-many** — adds `.push()`, `.find()`, `.get()` methods
+- `z.lazy(() => Schema)` → **belongs-to** — adds a callable that returns the parent entity
+- Foreign keys are auto-inferred: a `author` belongs-to field creates an `authorId` column
 
-### Schemas & Relationships
+## Events
 
-Define entities using Zod schemas with lazy relationships:
-
-```typescript
-// One-to-many: Author has many Posts
-const AuthorSchema = z.object({
-  name: z.string(),
-  posts: z.lazy(() => z.array(PostSchema)).optional(), // one-to-many
-});
-
-// Belongs-to: Post belongs to Author  
-const PostSchema = z.object({
-  title: z.string(),
-  author: z.lazy(() => AuthorSchema).optional(), // belongs-to
-});
-```
-
-### Explicit Junction Tables
-
-For many-to-many relationships, define explicit junction entities with additional fields:
+Subscribe to mutations per entity:
 
 ```typescript
-// Many-to-many with rich junction table
-const PostTagSchema = z.object({
-  post: z.lazy(() => PostSchema).optional(),
-  tag: z.lazy(() => TagSchema).optional(),
-  appliedAt: z.date().default(() => new Date()),
-  appliedBy: z.string(),
-  priority: z.number().default(0),
-});
-
-// Usage
-const postTag = post.postTags.push({ 
-  tagId: tag.id, 
-  appliedBy: 'editor',
-  priority: 5 
-});
-```
-
-**Why explicit junction tables?**
-- Full control over additional fields (timestamps, metadata, etc.)
-- Junction tables are queryable entities themselves
-- More flexible than auto-generated tables
-- Clearer data modeling
-
-## 🎯 API Reference
-
-### Creating & Querying
-
-```typescript
-// Insert new entities
-const user = db.users.insert({ name: 'Alice', email: 'alice@example.com' });
-
-// Find multiple with conditions
-const activeUsers = db.users.find({ active: true, $limit: 10 });
-
-// Get single entity
-const user = db.users.get({ email: 'alice@example.com' });
-const userById = db.users.get('user-id-123');
-
-// Update
-const updated = db.users.update('user-id', { name: 'Alice Smith' });
-
-// Upsert
-const user = db.users.upsert({ email: 'alice@example.com', name: 'Alice' });
-
-// Delete
-db.users.delete('user-id');
-```
-
-### Relationships
-
-```typescript
-// One-to-many: Add related entities
-const post = author.posts.push({ title: 'New Post', content: '...' });
-
-// Query related entities
-const authorPosts = author.posts(); // All posts
-const recentPosts = author.posts({ $limit: 5, $sortBy: 'createdAt:desc' });
-
-// Belongs-to: Navigate relationships
-const postAuthor = post.author();
-
-// Get specific related entity
-const specificPost = author.post('post-id-123');
-```
-
-### Reactive Editing
-
-```typescript
-const user = db.users.get('user-id');
-
-// Just change properties - automatically persists!
-user.name = 'New Name';
-user.email = 'new@email.com';
-user.active = false;
-
-// No need to call .save() or .update()
-// Changes are immediately persisted to database
-```
-
-### Event Subscriptions
-
-```typescript
-// Listen to database events
 db.users.subscribe('insert', (user) => {
   console.log(`New user: ${user.name}`);
 });
 
-db.posts.subscribe('update', (post) => {
-  console.log(`Post updated: ${post.title}`);
+db.users.subscribe('update', (user) => {
+  sendWebhook('user.updated', user);
 });
 
 db.users.subscribe('delete', (user) => {
-  console.log(`User deleted: ${user.name}`);
+  cleanup(user.id);
 });
+
+db.users.unsubscribe('insert', handler);
 ```
 
-### Transactions
+## Real-World Examples
+
+### Process Manager
 
 ```typescript
-const result = db.transaction(() => {
-  const author = db.authors.insert({ name: 'Jane' });
-  const post1 = author.posts.push({ title: 'Post 1' });
-  const post2 = author.posts.push({ title: 'Post 2' });
-  return { author, posts: [post1, post2] };
+import { SatiDB, z } from 'sqlite-zod-orm';
+
+const db = new SatiDB(':memory:', {
+  processes: z.object({
+    pid: z.number(),
+    name: z.string(),
+    command: z.string(),
+    workdir: z.string(),
+  }),
+}, {
+  indexes: { processes: ['name', 'pid'] },
+  changeTracking: true,
 });
+
+// Get latest process by name
+const latest = db.processes.select()
+  .where({ name: 'web-server' })
+  .orderBy('id', 'desc')
+  .limit(1)
+  .get();
+
+// Remove all by name
+const procs = db.processes.select().where({ name: 'worker' }).all();
+for (const p of procs) db.processes.delete(p.id);
 ```
 
-## 🔗 Relationship Types
-
-### One-to-Many
+### Platform Database (9 tables)
 
 ```typescript
-const PersonalitySchema = z.object({
-  name: z.string(),
-  chats: z.lazy(() => z.array(ChatSchema)).optional(),
+import { SatiDB, z } from 'sqlite-zod-orm';
+
+const db = new SatiDB('galaxy.db', {
+  users: UserSchema,
+  servers: ServerSchema,
+  members: MemberSchema,
+  agentTemplates: AgentTemplateSchema,
+  agentInstances: AgentInstanceSchema,
+  jobs: JobSchema,
+  generations: GenerationSchema,
+  customAgents: CustomAgentSchema,
+  messages: MessageSchema,
+}, {
+  changeTracking: true,
+  indexes: {
+    users: ['userId'],
+    servers: ['serverId', 'slug'],
+    members: ['serverId', ['serverId', 'userId']],
+    jobs: ['jobId', 'status'],
+    generations: ['jobId', 'instanceId'],
+    messages: [['agentInstanceId', 'userId']],
+  },
 });
 
-const ChatSchema = z.object({
-  title: z.string(),
-  personality: z.lazy(() => PersonalitySchema).optional(),
-});
+// Update balance — single SQL query
+db.servers.update({ balance: 750 }).where({ serverId: 'default' }).exec();
 
-// Usage
-const personality = db.personalities.insert({ name: 'Assistant' });
-const chat = personality.chats.push({ title: 'Help Session' });
-const chatPersonality = chat.personality(); // Navigate back
+// Count generations for a job
+const count = db.generations.select().where({ jobId }).count();
+db.jobs.update({ generationCount: count }).where({ jobId }).exec();
+
+// Enrich with related data (sync, no await needed)
+const job = db.jobs.select().where({ jobId: 'job-001' }).get();
+const user = db.users.select().where({ userId: job.userId }).get();
+const instance = db.agentInstances.select().where({ instanceId: job.instanceId }).get();
 ```
 
-### Many-to-Many (Explicit Junction)
+See [`examples/`](./examples/) for full implementations with tests:
+
+| Example | What it shows |
+|---------|---------------|
+| [positions.ts](./examples/positions.ts) | File position tracking with upsert |
+| [process-manager.ts](./examples/process-manager.ts) | Process management with retry logic |
+| [system-db.ts](./examples/system-db.ts) | Multi-entity system DB with key-value config |
+| [galaxy-db.ts](./examples/galaxy-db.ts) | 9-entity AI platform with enrichment and seeding |
+| [messaging.test.ts](./examples/messaging.test.ts) | Comprehensive feature showcase (subscriptions, change tracking, upsert) |
+
+## API Reference
+
+### Constructor
 
 ```typescript
-// Define all three entities
-const UserSchema = z.object({
-  name: z.string(),
-  likes: z.lazy(() => z.array(LikeSchema)).optional(),
-});
-
-const ProductSchema = z.object({
-  name: z.string(),
-  likes: z.lazy(() => z.array(LikeSchema)).optional(),
-});
-
-// Junction table with additional fields
-const LikeSchema = z.object({
-  user: z.lazy(() => UserSchema).optional(),
-  product: z.lazy(() => ProductSchema).optional(),
-  rating: z.number().min(1).max(5),
-  likedAt: z.date().default(() => new Date()),
-});
-
-// Usage
-const user = db.users.insert({ name: 'Alice' });
-const product = db.products.insert({ name: 'Laptop' });
-
-// Create relationship with metadata
-const like = user.likes.push({ 
-  productId: product.id, 
-  rating: 5 
-});
-
-// Query from both sides
-const userLikes = user.likes().map(l => l.product()); // Products Alice likes
-const productLikers = product.likes().map(l => l.user()); // Users who like laptop
-
-// Junction table is a full entity
-like.rating = 4; // Reactive update on junction table!
-```
-
-## 📝 Advanced Usage
-
-### Custom ID Generation
-
-IDs are automatically generated based on entity data hash. For custom IDs:
-
-```typescript
-const entity = db.entities.insert({ 
-  id: 'custom-id-123', // Explicit ID
-  name: 'Custom Entity' 
+const db = new SatiDB(path: string, schemas: SchemaMap, options?: {
+  changeTracking?: boolean;   // enable INSERT/UPDATE/DELETE logging
+  indexes?: Record<string, (string | string[])[]>;  // per-table indexes
 });
 ```
 
-### Query Options
+### Entity Methods
 
-```typescript
-const results = db.posts.find({
-  published: true,
-  $limit: 10,
-  $offset: 20,
-  $sortBy: 'createdAt:desc'
-});
-```
+| Method | Signature | Returns |
+|--------|-----------|---------|
+| `insert` | `insert(data)` | `AugmentedEntity` |
+| `get` | `get(id)` or `get(filter)` | `AugmentedEntity \| null` |
+| `select` | `select()` | `QueryBuilder` |
+| `update` | `update(id, data)` | `AugmentedEntity \| null` |
+| `update` | `update(data)` | `UpdateBuilder` (chain `.where().exec()`) |
+| `upsert` | `upsert(match, data)` | `AugmentedEntity` |
+| `delete` | `delete(id)` | `void` |
+| `subscribe` | `subscribe(event, callback)` | `void` |
+| `unsubscribe` | `unsubscribe(event, callback)` | `void` |
 
-### Schema Validation
+### DB Methods
 
-All data is validated against Zod schemas:
+| Method | Signature | Returns |
+|--------|-----------|---------|
+| `getChangesSince` | `getChangesSince(seq, table?)` | `Change[]` |
 
-```typescript
-const UserSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
-  age: z.number().optional(),
-});
+## Requirements
 
-// Throws validation error if invalid
-const user = db.users.insert({ 
-  name: 'A', // Too short!
-  email: 'invalid-email' // Invalid format!
-});
-```
+- [Bun](https://bun.sh) ≥ 1.0
+- TypeScript ≥ 5.0
 
-## 🎯 Best Practices
+## License
 
-1. **Use Explicit Junction Tables**: Define junction entities with additional fields rather than relying on auto-generated tables
-2. **Leverage Reactive Editing**: Change properties directly instead of calling update methods
-3. **Subscribe to Events**: Use subscriptions for real-time updates and side effects
-4. **Validate with Zod**: Define comprehensive schemas with proper validation rules
-5. **Use Transactions**: Wrap related operations in transactions for data consistency
-
-## 🔄 Migration from Traditional ORMs
-
-```typescript
-// Traditional ORM
-const user = await User.findById(id);
-user.name = 'New Name';
-await user.save(); // Explicit save
-
-// SatiDB
-const user = db.users.get(id);
-user.name = 'New Name'; // Automatically saved!
-```
-
-## 🛠️ Requirements
-
-- Bun runtime with SQLite support
-- TypeScript (recommended) or JavaScript
-- Zod for schema validation
-
-## 📄 License
-
-MIT License - feel free to use in your projects!
-
----
-
-**SatiDB** - Reactive, type-safe database operations made simple. 🚀
+MIT

@@ -232,6 +232,17 @@ export function compileProxyQuery(
             } else if (typeof value === 'object' && value !== null && !(value instanceof Date)) {
                 // Operator object like { $gt: 5 }
                 for (const [op, operand] of Object.entries(value)) {
+                    if (op === '$in') {
+                        const arr = operand as any[];
+                        if (arr.length === 0) {
+                            whereParts.push('1 = 0');
+                        } else {
+                            const placeholders = arr.map(() => '?').join(', ');
+                            whereParts.push(`${fieldRef} IN (${placeholders})`);
+                            params.push(...arr);
+                        }
+                        continue;
+                    }
                     const opMap: Record<string, string> = {
                         $gt: '>', $gte: '>=', $lt: '<', $lte: '<=', $ne: '!=',
                     };

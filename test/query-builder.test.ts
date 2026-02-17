@@ -13,7 +13,7 @@ import { compileIQO, QueryBuilder } from '../src/query-builder';
 test('compileIQO: empty IQO produces SELECT * FROM table', () => {
     const { sql, params } = compileIQO('users', {
         selects: [], wheres: [], whereAST: null,
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toBe('SELECT users.* FROM users');
     expect(params).toEqual([]);
@@ -22,7 +22,7 @@ test('compileIQO: empty IQO produces SELECT * FROM table', () => {
 test('compileIQO: specific columns', () => {
     const { sql } = compileIQO('users', {
         selects: ['name', 'age'], wheres: [], whereAST: null,
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toBe('SELECT users.name, users.age FROM users');
 });
@@ -34,7 +34,7 @@ test('compileIQO: WHERE conditions', () => {
             { field: 'name', operator: '=', value: 'Alice' },
             { field: 'age', operator: '>', value: 18 },
         ],
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toBe('SELECT users.* FROM users WHERE name = ? AND age > ?');
     expect(params).toEqual(['Alice', 18]);
@@ -44,7 +44,7 @@ test('compileIQO: IN operator', () => {
     const { sql, params } = compileIQO('users', {
         selects: [], whereAST: null,
         wheres: [{ field: 'role', operator: 'IN', value: ['admin', 'mod'] }],
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toContain('role IN (?, ?)');
     expect(params).toEqual(['admin', 'mod']);
@@ -54,7 +54,7 @@ test('compileIQO: empty IN produces 1 = 0', () => {
     const { sql } = compileIQO('users', {
         selects: [], whereAST: null,
         wheres: [{ field: 'role', operator: 'IN', value: [] }],
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toContain('1 = 0');
 });
@@ -64,7 +64,7 @@ test('compileIQO: ORDER BY, LIMIT, OFFSET', () => {
         selects: [], wheres: [], whereAST: null,
         limit: 10, offset: 20,
         orderBy: [{ field: 'name', direction: 'asc' }],
-        includes: [], raw: false,
+        includes: [], raw: false, joins: [],
     });
     expect(sql).toBe('SELECT users.* FROM users ORDER BY name ASC LIMIT 10 OFFSET 20');
 });
@@ -78,7 +78,7 @@ test('compileIQO: AST-based WHERE takes precedence over object wheres', () => {
             left: { type: 'column', name: 'age' },
             right: { type: 'literal', value: 30 },
         },
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(sql).toContain('("age" = ?)');
     expect(sql).not.toContain('IGNORED');
@@ -90,7 +90,7 @@ test('compileIQO: Date values get ISO-stringified', () => {
     const { params } = compileIQO('events', {
         selects: [], whereAST: null,
         wheres: [{ field: 'createdAt', operator: '>', value: d }],
-        limit: null, offset: null, orderBy: [], includes: [], raw: false,
+        limit: null, offset: null, orderBy: [], includes: [], raw: false, joins: [],
     });
     expect(params[0]).toBe(d.toISOString());
 });
