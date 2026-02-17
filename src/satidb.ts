@@ -66,7 +66,7 @@ type TypedAccessors<T extends SchemaMap> = {
 /**
  * A custom SQLite database wrapper with schema validation, relationships, and event handling.
  */
-class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
+class _SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   private db: Database;
   private schemas: Schemas;
   private relationships: Relationship[];
@@ -874,5 +874,9 @@ class SatiDB<Schemas extends SchemaMap> extends EventEmitter {
   }
 }
 
-export type DB<S extends SchemaMap> = SatiDB<S> & TypedAccessors<S>;
+// Re-export the class with proper typing so `new SatiDB(...)` returns entity accessors
+const SatiDB = _SatiDB as new <S extends SchemaMap>(dbFile: string, schemas: S) => _SatiDB<S> & TypedAccessors<S>;
+type SatiDB<S extends SchemaMap> = _SatiDB<S> & TypedAccessors<S>;
+
+export type DB<S extends SchemaMap> = SatiDB<S>;
 export { SatiDB, z };
