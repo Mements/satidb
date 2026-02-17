@@ -1,6 +1,6 @@
 # sqlite-zod-orm
 
-Type-safe SQLite ORM for Bun. Define schemas with Zod, get a fully-typed database with **three ways to query**, automatic relationships, lazy navigation, and zero SQL.
+Type-safe SQLite ORM for Bun. Define schemas with Zod, get a fully-typed database with automatic relationships, lazy navigation, and zero SQL.
 
 ```bash
 bun add sqlite-zod-orm
@@ -20,78 +20,100 @@ const db = new Database(':memory:', {
 });
 
 const alice = db.users.insert({ name: 'Alice', email: 'alice@example.com', role: 'admin' });
-const found = db.users.get(1);          // by ID
-const admin = db.users.get({ role: 'admin' }); // by filter
 ```
 
 ---
 
-## Three Ways to Query
+## Reading Data — Four Ways
 
-### 1. Fluent Builder — `select().where().all()`
+Every table accessor gives you four ways to query, from simple to powerful:
 
-Single-table queries with chaining. The workhorse API.
+### `.get(id | filter)` — Single Row
+
+Quick lookup. Returns one entity or `null`.
 
 ```typescript
-const trees = db.trees.select()
-  .where({ alive: true })
-  .orderBy('planted', 'asc')
+const user = db.users.get(1);                     // by ID
+const admin = db.users.get({ role: 'admin' });     // by filter
+```
+
+### `.find(filter?)` — Array of Matching Rows
+
+Returns all rows matching conditions. Omit the filter to get everything.
+
+```typescript
+const members = db.users.find({ role: 'member' });
+const everyone = db.users.find();                  // all rows
+// shorthand:
+const all = db.users.all();                        // same as find()
+```
+
+### `.select()` — Fluent Query Builder
+
+Chain `.where()`, `.orderBy()`, `.limit()`, `.offset()`, `.join()` for complex queries:
+
+```typescript
+const topScorers = db.users.select()
+  .where({ score: { $gt: 50 } })
+  .orderBy('score', 'desc')
   .limit(10)
   .all();
 
-// With operators
-const old = db.trees.select()
-  .where({ planted: { $lt: '1600-01-01' } })
+// Pick specific columns
+const names = db.users.select('name', 'email')
+  .where({ role: 'admin' })
   .all();
 
-// Count / single row
-const total = db.trees.select().where({ alive: true }).count();
-const oak = db.trees.select().where({ name: 'Major Oak' }).get();
+// Single result
+const first = db.users.select().orderBy('name').get();
+
+// Count
+const total = db.users.select().where({ alive: true }).count();
 ```
 
-**Operators:** `$gt` `$gte` `$lt` `$lte` `$ne` `$in` `$or`
+**Operators:** `$gt` `$gte` `$lt` `$lte` `$ne` `$in`
 
 #### `$or` — Disjunctive Filters
 
 ```typescript
-// Find admins OR users with score > 50
+// Find admins OR high scorers
 const results = db.users.select()
   .where({ $or: [{ role: 'admin' }, { score: { $gt: 50 } }] })
   .all();
 
-// $or can be combined with regular AND conditions
+// $or combined with AND conditions
 const alive = db.trees.select()
   .where({ alive: true, $or: [{ name: 'Oak' }, { name: 'Elm' }] })
   .all();
 // → WHERE alive = 1 AND (name = 'Oak' OR name = 'Elm')
 ```
 
-### 2. Fluent Join — `select().join(db.table).all()`
+#### Fluent Join — Cross-Table Queries
 
-Cross-table queries with auto-inferred foreign keys from `z.lazy()` relationships.
+Auto-infers foreign keys from `z.lazy()` relationships:
 
 ```typescript
-const rows = db.trees.select('name', 'planted')
-  .join(db.forests, ['name', 'address'])
-  .where({ alive: true })
-  .orderBy('planted', 'asc')
+const rows = db.books.select('title', 'year')
+  .join(db.authors, ['name', 'country'])
+  .where({ year: { $gt: 1800 } })
+  .orderBy('year', 'asc')
   .all();
-// → [{ name: 'Major Oak', planted: '1500-01-01',
-//      forests_name: 'Sherwood', forests_address: 'Nottingham, UK' }]
+// → [{ title: 'Crime and Punishment', year: 1866,
+//      authors_name: 'Dostoevsky', authors_country: 'Russia' }]
 ```
 
-### 3. Proxy Query — `db.query(c => { ... })`
+### `db.query()` — Proxy Query (SQL-like)
 
-Full SQL-like control with destructured table aliases. Supports WHERE on joined columns.
+Full SQL-like control with destructured table aliases. Supports WHERE/ORDER BY on joined columns.
 
 ```typescript
 const rows = db.query(c => {
-  const { forests: f, trees: t } = c;
+  const { authors: a, books: b } = c;
   return {
-    select: { tree: t.name, forest: f.name, planted: t.planted },
-    join: [[t.forestId, f.id]],
-    where: { [f.name]: 'Sherwood' },
-    orderBy: { [t.planted]: 'asc' },
+    select: { author: a.name, book: b.title, year: b.year },
+    join: [[b.author, a.id]],
+    where: { [a.country]: 'Russia' },
+    orderBy: { [b.year]: 'asc' },
   };
 });
 ```
@@ -117,19 +139,20 @@ const BookSchema: z.ZodType<Book> = z.object({
 });
 ```
 
-### Entity References in Insert & WHERE
+### Entity References
 
-Pass entities directly — the ORM resolves to foreign keys automatically:
+Pass entities directly in `insert()` and `where()` — the ORM resolves to foreign keys:
 
 ```typescript
 const tolstoy = db.authors.insert({ name: 'Leo Tolstoy' });
 
-// Insert — entity resolves to FK
+// Insert — entity resolves to FK automatically
 db.books.insert({ title: 'War and Peace', author: tolstoy });
 
 // WHERE — entity resolves to FK condition
-const books = db.books.select().where({ author: tolstoy }).all();
+const books = db.books.find({ author: tolstoy });
 const first = db.books.get({ author: tolstoy });
+const fluent = db.books.select().where({ author: tolstoy }).all();
 ```
 
 ### Lazy Navigation
@@ -142,11 +165,10 @@ const book = db.books.get({ title: 'War and Peace' })!;
 const author = book.author();       // → { name: 'Leo Tolstoy', ... }
 
 // one-to-many: author → books
-const books = tolstoy.books();      // → [{ title: 'War and Peace' }, { title: 'Anna Karenina' }]
+const books = tolstoy.books();      // → [{ title: 'War and Peace' }, ...]
 
 // Chain navigation
-const book2 = db.books.get(1)!;
-const allByAuthor = book2.author().books();
+const allByAuthor = book.author().books();
 ```
 
 ---
@@ -154,12 +176,37 @@ const allByAuthor = book2.author().books();
 ## CRUD
 
 ```typescript
+// Insert (defaults fill in automatically)
 const user = db.users.insert({ name: 'Alice', role: 'admin' });
+
+// Read
 const found = db.users.get(1);
+const admins = db.users.find({ role: 'admin' });
+const all = db.users.all();
+
+// Entity-level update
+user.update({ role: 'superadmin' });
+
+// Update by ID
 db.users.update(1, { role: 'superadmin' });
+
+// Fluent update with WHERE
 db.users.update({ role: 'member' }).where({ role: 'guest' }).exec();
+
+// Upsert
 db.users.upsert({ name: 'Alice' }, { name: 'Alice', role: 'admin' });
+
+// Delete
 db.users.delete(1);
+```
+
+### Auto-Persist Proxy
+
+Setting a property on an entity auto-updates the DB:
+
+```typescript
+const alice = db.users.get(1)!;
+alice.score = 200;    // → UPDATE users SET score = 200 WHERE id = 1
 ```
 
 ---
@@ -188,7 +235,7 @@ db.users.insert({ name: '', email: 'bad', age: -1 });  // throws ZodError
 const db = new Database(':memory:', schemas, {
   indexes: {
     users: ['email', ['name', 'role']],  // single + composite
-    trees: ['forestId', 'planted'],
+    books: ['authorId', 'year'],
   },
 });
 ```
@@ -267,18 +314,28 @@ test/                — unit + integration tests
 | Method | Description |
 |---|---|
 | `new Database(path, schemas, options?)` | Create database with Zod schemas |
+| **Reading** | |
+| `db.table.get(id \| filter)` | Single row by ID or filter |
+| `db.table.find(filter?)` | Array of matching rows |
+| `db.table.all()` | All rows |
+| `db.table.select(...cols?)` | Fluent query builder |
+| `db.table.select().where(filter).all()` | Fluent query with conditions |
+| `db.table.select().where({ $or: [...] })` | OR conditions |
+| `db.table.select().join(db.other, cols?).all()` | Fluent join (auto FK) |
+| `db.table.select().count()` | Count rows |
+| `db.query(c => { ... })` | Proxy callback (SQL-like JOINs) |
+| **Writing** | |
 | `db.table.insert(data)` | Insert with validation; entities resolve to FKs |
-| `db.table.get(id \| filter)` | Get single row |
 | `db.table.update(id, data)` | Update by ID |
 | `db.table.update(data).where(filter).exec()` | Fluent update |
 | `db.table.upsert(match, data)` | Insert or update |
 | `db.table.delete(id)` | Delete by ID |
-| `db.table.select().where().orderBy().limit().offset().all()` | Fluent query |
-| `db.table.select().where({ $or: [...] })` | OR conditions |
-| `db.table.select().join(db.other, cols?).all()` | Fluent join (auto FK) |
-| `db.query(c => { ... })` | Proxy callback query |
+| **Navigation** | |
 | `entity.relationship()` | Lazy navigation (read-only) |
-| `db.table.select().count()` | Count rows |
+| `entity.update(data)` | Update entity in-place |
+| `entity.delete()` | Delete entity |
+| **Events** | |
+| `db.table.subscribe(event, callback)` | Listen for insert/update/delete |
 | `db.table.select().subscribe(cb, opts)` | Smart polling |
 | `db.getChangesSince(version, table?)` | Change tracking |
 

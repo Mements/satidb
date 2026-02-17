@@ -3,8 +3,8 @@
  *
  * Demonstrates all core features in a single runnable file:
  *  - Schema definition with Zod validation & defaults
- *  - Insert, get, update, delete (CRUD)
- *  - Fluent select().where().orderBy() queries
+ *  - Insert, get, find, all (CRUD)
+ *  - Three ways to query: .get, .find, .select, .query
  *  - Query operators ($gt, $in, $ne, $lt, $gte, $or)
  *  - z.lazy() relationships with auto FK columns
  *  - Lazy navigation: book.author(), author.books()
@@ -61,7 +61,7 @@ const db = new Database(':memory:', {
 });
 
 // =============================================================================
-// 3. CRUD — Insert, Get, Update, Delete
+// 3. CRUD — Insert, Get, Find, All, Update, Delete
 // =============================================================================
 
 console.log('── 1. CRUD ──');
@@ -74,12 +74,20 @@ const carol = db.users.insert({ name: 'Carol', email: 'carol@example.com', score
 console.log('Inserted:', alice.name, bob.name, carol.name);
 console.log('Bob default role:', bob.role); // → 'member'
 
-// Get by ID or by filter
+// .get() — single row by ID or filter
 const found = db.users.get(1);
 console.log('Get by ID:', found?.name); // → 'Alice'
 
 const admin = db.users.get({ role: 'admin' });
 console.log('Get by filter:', admin?.name); // → 'Alice'
+
+// .find() — array of rows matching conditions
+const members = db.users.find({ role: 'member' });
+console.log('Find members:', members.map(u => u.name)); // → ['Bob', 'Carol']
+
+// .all() — every row
+const everyone = db.users.all();
+console.log('All users:', everyone.map(u => u.name)); // → ['Alice', 'Bob', 'Carol']
 
 // Update by ID
 alice.update({ score: 200 });
@@ -91,7 +99,7 @@ console.log('Reset member scores:', affected, 'rows');
 
 // Delete
 db.users.delete(carol.id);
-console.log('After delete, total:', db.users.select().count());
+console.log('After delete, total:', db.users.all().length); // → 2
 
 // =============================================================================
 // 4. FLUENT QUERIES — select().where().orderBy() + $or
@@ -139,11 +147,14 @@ db.books.insert({ title: 'Crime and Punishment', year: 1866, pages: 671, author:
 db.books.insert({ title: 'The Brothers Karamazov', year: 1880, pages: 796, author: dostoevsky });
 db.books.insert({ title: 'The Trial', year: 1925, pages: 255, author: kafka });
 
-console.log(`Seeded ${db.authors.select().count()} authors, ${db.books.select().count()} books`);
+console.log(`Seeded ${db.authors.all().length} authors, ${db.books.all().length} books`);
 
 // Query with entity reference in WHERE
-const tolstoyBooks = db.books.select().where({ author: tolstoy }).all();
-console.log('Tolstoy books:', tolstoyBooks.map(b => b.title));
+const tolstoyBooks = db.books.find({ author: tolstoy } as any);
+console.log('Tolstoy books (.find):', tolstoyBooks.map(b => b.title));
+
+const firstDostoevsky = db.books.get({ author: dostoevsky } as any);
+console.log('First Dostoevsky (.get):', firstDostoevsky?.title);
 
 // =============================================================================
 // 6. LAZY NAVIGATION — book.author(), author.books()

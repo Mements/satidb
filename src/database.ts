@@ -51,6 +51,8 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
             const accessor: EntityAccessor<Schemas[typeof key]> = {
                 insert: (data) => this.insert(entityName, data),
                 get: (conditions) => this.get(entityName, conditions),
+                find: (conditions) => this.find(entityName, conditions ?? {}),
+                all: () => this.find(entityName, {}),
                 update: (idOrData: any, data?: any) => {
                     if (typeof idOrData === 'number') return this.update(entityName, idOrData, data);
                     return this._createUpdateBuilder(entityName, idOrData);

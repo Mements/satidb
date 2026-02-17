@@ -55,6 +55,8 @@ export type UpdateBuilder<T> = {
 export type EntityAccessor<S extends z.ZodType<any>> = {
     insert: (data: EntityData<S>) => AugmentedEntity<S>;
     get: (conditions: number | Partial<InferSchema<S>>) => AugmentedEntity<S> | null;
+    find: (conditions?: Partial<InferSchema<S>>) => AugmentedEntity<S>[];
+    all: () => AugmentedEntity<S>[];
     update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((data: Partial<EntityData<S>>) => UpdateBuilder<AugmentedEntity<S>>);
     upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
     delete: (id: number) => void;
