@@ -41,7 +41,10 @@ export type LazyMethod<T = any, R = any> = {
 
 export type InferSchema<S extends z.ZodType<any>> = z.infer<S>;
 
-export type EntityData<S extends z.ZodType<any>> = Omit<InferSchema<S>, 'id'>;
+/** Input type: fields with .default() become optional */
+export type InputSchema<S extends z.ZodType<any>> = z.input<S>;
+
+export type EntityData<S extends z.ZodType<any>> = Omit<InputSchema<S>, 'id'>;
 
 export type AugmentedEntity<S extends z.ZodType<any>> = InferSchema<S> & {
     update: (data: Partial<EntityData<S>>) => AugmentedEntity<S> | null;
