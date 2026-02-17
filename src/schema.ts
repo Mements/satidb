@@ -53,6 +53,61 @@ export function parseRelationships(schemas: SchemaMap): Relationship[] {
     return relationships;
 }
 
+/**
+ * Parse declarative `relations` config into Relationship[] objects.
+ *
+ * Config format: `{ childTable: { fieldName: 'parentTable' } }`
+ * Example: `{ books: { author: 'authors' } }` produces:
+ *   - books → authors  (belongs-to, FK = authorId)
+ *   - authors → books  (one-to-many, inverse, field = 'books')
+ */
+export function parseRelationsConfig(
+    relations: Record<string, Record<string, string>>,
+    schemas: SchemaMap,
+): Relationship[] {
+    const relationships: Relationship[] = [];
+    const added = new Set<string>();
+
+    for (const [fromTable, rels] of Object.entries(relations)) {
+        if (!schemas[fromTable]) {
+            throw new Error(`relations: unknown table '${fromTable}'`);
+        }
+        for (const [fieldName, toTable] of Object.entries(rels)) {
+            if (!schemas[toTable]) {
+                throw new Error(`relations: unknown target table '${toTable}' in ${fromTable}.${fieldName}`);
+            }
+
+            // belongs-to: books.author → authors
+            const btKey = `${fromTable}.${fieldName}:belongs-to`;
+            if (!added.has(btKey)) {
+                relationships.push({
+                    type: 'belongs-to',
+                    from: fromTable,
+                    to: toTable,
+                    relationshipField: fieldName,
+                    foreignKey: `${fieldName}Id`,
+                });
+                added.add(btKey);
+            }
+
+            // auto-infer one-to-many inverse: authors.books → books[]
+            const otmKey = `${toTable}.${fromTable}:one-to-many`;
+            if (!added.has(otmKey)) {
+                relationships.push({
+                    type: 'one-to-many',
+                    from: toTable,
+                    to: fromTable,
+                    relationshipField: fromTable, // e.g. 'books'
+                    foreignKey: '',
+                });
+                added.add(otmKey);
+            }
+        }
+    }
+
+    return relationships;
+}
+
 /** Check if a schema field is a z.lazy() relationship */
 export function isRelationshipField(schema: z.ZodType<any>, key: string): boolean {
     let fieldSchema = asZodObject(schema).shape[key];
@@ -60,6 +115,20 @@ export function isRelationshipField(schema: z.ZodType<any>, key: string): boolea
         fieldSchema = fieldSchema._def.innerType;
     }
     return fieldSchema instanceof z.ZodLazy;
+}
+
+/**
+ * Check if a field is a relationship based on the relationships array.
+ * Used for config-based relations where the field doesn't exist in the schema.
+ */
+export function isRelationshipFieldByConfig(
+    entityName: string,
+    key: string,
+    relationships: Relationship[],
+): boolean {
+    return relationships.some(
+        r => r.from === entityName && r.type === 'belongs-to' && r.relationshipField === key
+    );
 }
 
 /** Get storable (non-relationship, non-id) fields from a schema */
@@ -136,3 +205,28 @@ export function preprocessRelationshipFields(schema: z.ZodType<any>, data: Recor
     }
     return processedData;
 }
+
+/**
+ * Preprocess relationship fields using the relationships array (config-based).
+ * Converts entity references to FK values, e.g. { author: tolstoy } → { authorId: 1 }
+ */
+export function preprocessRelationshipFieldsByConfig(
+    entityName: string,
+    data: Record<string, any>,
+    relationships: Relationship[],
+): Record<string, any> {
+    const processedData = { ...data };
+    for (const [key, value] of Object.entries(data)) {
+        if (isRelationshipFieldByConfig(entityName, key, relationships)) {
+            if (value && typeof value === 'object' && 'id' in value) {
+                processedData[`${key}Id`] = value.id;
+                delete processedData[key];
+            } else if (typeof value === 'number') {
+                processedData[`${key}Id`] = value;
+                delete processedData[key];
+            }
+        }
+    }
+    return processedData;
+}
+

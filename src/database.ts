@@ -16,9 +16,11 @@ import type {
 } from './types';
 import { asZodObject } from './types';
 import {
-    parseRelationships, isRelationshipField, getStorableFields,
+    parseRelationships, parseRelationsConfig,
+    isRelationshipField, isRelationshipFieldByConfig,
+    getStorableFields,
     zodTypeToSqlType, transformForStorage, transformFromStorage,
-    preprocessRelationshipFields,
+    preprocessRelationshipFields, preprocessRelationshipFieldsByConfig,
 } from './schema';
 
 // =============================================================================
@@ -39,7 +41,17 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
         this.schemas = schemas;
         this.options = options;
         this.subscriptions = { insert: {}, update: {}, delete: {} };
-        this.relationships = parseRelationships(schemas);
+        // Merge relationships from z.lazy() detection and declarative config
+        const lazyRels = parseRelationships(schemas);
+        const configRels = options.relations ? parseRelationsConfig(options.relations, schemas) : [];
+        // Deduplicate: config rels won't overlap with z.lazy() rels in typical usage
+        const relKeys = new Set(lazyRels.map(r => `${r.from}.${r.relationshipField}:${r.type}`));
+        const mergedRels = [...lazyRels];
+        for (const cr of configRels) {
+            const key = `${cr.from}.${cr.relationshipField}:${cr.type}`;
+            if (!relKeys.has(key)) { mergedRels.push(cr); relKeys.add(key); }
+        }
+        this.relationships = mergedRels;
         this.initializeTables();
         this.runMigrations();
         if (options.indexes) this.createIndexes(options.indexes);
@@ -192,10 +204,15 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
 
     private insert<T extends Record<string, any>>(entityName: string, data: Omit<T, 'id'>): AugmentedEntity<any> {
         const schema = this.schemas[entityName]!;
-        const processedData = preprocessRelationshipFields(schema, data);
+        // Preprocess: convert entity refs → FK IDs (supports both z.lazy() and config-based)
+        let processedData = preprocessRelationshipFields(schema, data as Record<string, any>);
+        processedData = preprocessRelationshipFieldsByConfig(entityName, processedData, this.relationships);
         const validatedData = asZodObject(schema).passthrough().parse(processedData);
         const storableData = Object.fromEntries(
-            Object.entries(validatedData).filter(([key]) => !isRelationshipField(schema, key))
+            Object.entries(validatedData).filter(([key]) =>
+                !isRelationshipField(schema, key) &&
+                !isRelationshipFieldByConfig(entityName, key, this.relationships)
+            )
         );
         const transformed = transformForStorage(storableData);
         const columns = Object.keys(transformed);
@@ -534,6 +551,7 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
             this.schemas,
             callback as any,
             (sql: string, params: any[]) => this.db.query(sql).all(...params) as T[],
+            this.relationships,
         );
     }
 }

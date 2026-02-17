@@ -19,6 +19,23 @@ export type DatabaseOptions = {
     changeTracking?: boolean;
     /** Index definitions per table: { tableName: ['col1', ['col2', 'col3']] } */
     indexes?: Record<string, IndexDef[]>;
+    /**
+     * Declare relationships via config — no z.lazy() or interfaces needed.
+     *
+     * Format: `{ childTable: { fieldName: 'parentTable' } }`
+     *
+     * Example:
+     * ```
+     * relations: {
+     *   books: { author: 'authors' },   // books has belongs-to author
+     *   comments: { post: 'posts' },     // comments has belongs-to post
+     * }
+     * ```
+     *
+     * The ORM auto-creates FK columns (authorId), inverse one-to-many, lazy navigation, and entity refs.
+     * Can be used alongside z.lazy() — both are supported.
+     */
+    relations?: Record<string, Record<string, string>>;
 };
 
 export type Relationship = {

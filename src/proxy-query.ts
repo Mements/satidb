@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { Relationship } from './types';
 
 // ---------- SQL Identifier Quoting ----------
 
@@ -95,6 +96,7 @@ interface AliasEntry {
  */
 export function createContextProxy(
     schemas: Record<string, z.ZodType<any>>,
+    relationships: Relationship[] = [],
 ): { proxy: Record<string, Record<string, ColumnNode>>; aliasMap: Map<string, AliasEntry[]> } {
     const aliases = new Map<string, AliasEntry[]>();
     let aliasCounter = 0;
@@ -109,18 +111,26 @@ export function createContextProxy(
                 : {};
             const columns = new Set(Object.keys(shape));
 
-            // Detect z.lazy() fields (belongs-to relationships)
-            // Use _def.typeName instead of instanceof to avoid ESM/CJS boundary issues
+            // Detect relationship fields from BOTH z.lazy() and config-based relations
             const relationshipFields = new Set<string>();
+
+            // 1. z.lazy() introspection
             for (const [key, fieldSchema] of Object.entries(shape)) {
                 let inner: any = fieldSchema;
                 if (inner?._def?.typeName === 'ZodOptional') inner = inner._def.innerType;
                 if (inner?._def?.typeName === 'ZodLazy') {
-                    // Only belongs-to (non-array lazy fields)
                     const resolved = inner._def.getter();
                     if (resolved?._def?.typeName !== 'ZodArray') {
                         relationshipFields.add(key);
                     }
+                }
+            }
+
+            // 2. Config-based relations
+            for (const rel of relationships) {
+                if (rel.from === tableName && rel.type === 'belongs-to') {
+                    relationshipFields.add(rel.relationshipField);
+                    columns.add(rel.relationshipField); // make it accessible via proxy
                 }
             }
 
@@ -327,14 +337,16 @@ export function compileProxyQuery(
  * @param schemas The schema map for all registered tables.
  * @param callback The user's query callback that receives the context proxy.
  * @param executor A function that runs the compiled SQL and returns rows.
+ * @param relationships Optional relationships array for config-based relations.
  * @returns The query results.
  */
 export function executeProxyQuery<T>(
     schemas: Record<string, z.ZodType<any>>,
     callback: (ctx: any) => ProxyQueryResult,
     executor: (sql: string, params: any[]) => T[],
+    relationships: Relationship[] = [],
 ): T[] {
-    const { proxy, aliasMap } = createContextProxy(schemas);
+    const { proxy, aliasMap } = createContextProxy(schemas, relationships);
     const queryResult = callback(proxy);
     const { sql, params } = compileProxyQuery(queryResult, aliasMap);
     return executor(sql, params);

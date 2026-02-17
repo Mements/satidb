@@ -24,13 +24,38 @@ const alice = db.users.insert({ name: 'Alice', email: 'alice@example.com', role:
 
 ---
 
+## Defining Relationships
+
+Declare relationships in the constructor options — no `z.lazy()` or interface boilerplate needed:
+
+```typescript
+const AuthorSchema = z.object({ name: z.string(), country: z.string() });
+const BookSchema = z.object({ title: z.string(), year: z.number() });
+
+const db = new Database(':memory:', {
+  authors: AuthorSchema,
+  books: BookSchema,
+}, {
+  relations: {
+    books: { author: 'authors' },   // books.author → authors (belongs-to)
+  },
+});
+```
+
+**That's it.** The ORM automatically:
+- Creates `authorId` FK column on `books`
+- Infers the inverse `authors → books` (one-to-many)
+- Enables lazy navigation: `book.author()`, `author.books()`
+- Enables entity references in insert/where: `{ author: tolstoy }`
+- Enables fluent joins: `db.books.select().join(db.authors).all()`
+
+> **Note:** `z.lazy()` is still supported for backwards compatibility, but the `relations` config is recommended for cleaner schemas.
+
+---
+
 ## Reading Data — Four Ways
 
-Every table accessor gives you four ways to query, from simple to powerful:
-
 ### `.get(id | filter)` — Single Row
-
-Quick lookup. Returns one entity or `null`.
 
 ```typescript
 const user = db.users.get(1);                     // by ID
@@ -39,18 +64,13 @@ const admin = db.users.get({ role: 'admin' });     // by filter
 
 ### `.find(filter?)` — Array of Matching Rows
 
-Returns all rows matching conditions. Omit the filter to get everything.
-
 ```typescript
 const members = db.users.find({ role: 'member' });
 const everyone = db.users.find();                  // all rows
-// shorthand:
-const all = db.users.all();                        // same as find()
+const all = db.users.all();                        // shorthand
 ```
 
 ### `.select()` — Fluent Query Builder
-
-Chain `.where()`, `.orderBy()`, `.limit()`, `.offset()`, `.join()` for complex queries:
 
 ```typescript
 const topScorers = db.users.select()
@@ -58,17 +78,6 @@ const topScorers = db.users.select()
   .orderBy('score', 'desc')
   .limit(10)
   .all();
-
-// Pick specific columns
-const names = db.users.select('name', 'email')
-  .where({ role: 'admin' })
-  .all();
-
-// Single result
-const first = db.users.select().orderBy('name').get();
-
-// Count
-const total = db.users.select().where({ alive: true }).count();
 ```
 
 **Operators:** `$gt` `$gte` `$lt` `$lte` `$ne` `$in`
@@ -76,21 +85,20 @@ const total = db.users.select().where({ alive: true }).count();
 #### `$or` — Disjunctive Filters
 
 ```typescript
-// Find admins OR high scorers
 const results = db.users.select()
   .where({ $or: [{ role: 'admin' }, { score: { $gt: 50 } }] })
   .all();
 
-// $or combined with AND conditions
+// Combined with AND
 const alive = db.trees.select()
   .where({ alive: true, $or: [{ name: 'Oak' }, { name: 'Elm' }] })
   .all();
 // → WHERE alive = 1 AND (name = 'Oak' OR name = 'Elm')
 ```
 
-#### Fluent Join — Cross-Table Queries
+#### Fluent Join
 
-Auto-infers foreign keys from `z.lazy()` relationships:
+Auto-infers foreign keys from relationships:
 
 ```typescript
 const rows = db.books.select('title', 'year')
@@ -98,13 +106,12 @@ const rows = db.books.select('title', 'year')
   .where({ year: { $gt: 1800 } })
   .orderBy('year', 'asc')
   .all();
-// → [{ title: 'Crime and Punishment', year: 1866,
-//      authors_name: 'Dostoevsky', authors_country: 'Russia' }]
+// → [{ title: 'War and Peace', year: 1869, authors_name: 'Leo Tolstoy', ... }]
 ```
 
 ### `db.query()` — Proxy Query (SQL-like)
 
-Full SQL-like control with destructured table aliases. Supports WHERE/ORDER BY on joined columns.
+Full SQL-like control with destructured table aliases:
 
 ```typescript
 const rows = db.query(c => {
@@ -120,44 +127,24 @@ const rows = db.query(c => {
 
 ---
 
-## Relationships
-
-Define with `z.lazy()`. The ORM auto-creates FK columns and indexes.
-
-```typescript
-interface Author { name: string; books?: Book[]; }
-interface Book { title: string; author?: Author; }
-
-const AuthorSchema: z.ZodType<Author> = z.object({
-  name: z.string(),
-  books: z.lazy(() => z.array(BookSchema)).optional(),    // one-to-many
-});
-
-const BookSchema: z.ZodType<Book> = z.object({
-  title: z.string(),
-  author: z.lazy(() => AuthorSchema).optional(),          // belongs-to → auto authorId FK
-});
-```
-
-### Entity References
+## Entity References
 
 Pass entities directly in `insert()` and `where()` — the ORM resolves to foreign keys:
 
 ```typescript
-const tolstoy = db.authors.insert({ name: 'Leo Tolstoy' });
+const tolstoy = db.authors.insert({ name: 'Leo Tolstoy', country: 'Russia' });
 
-// Insert — entity resolves to FK automatically
-db.books.insert({ title: 'War and Peace', author: tolstoy });
+// Insert — entity resolves to FK
+db.books.insert({ title: 'War and Peace', year: 1869, author: tolstoy });
 
 // WHERE — entity resolves to FK condition
 const books = db.books.find({ author: tolstoy });
 const first = db.books.get({ author: tolstoy });
-const fluent = db.books.select().where({ author: tolstoy }).all();
 ```
 
-### Lazy Navigation
+## Lazy Navigation
 
-Every relationship field becomes a callable method on returned entities:
+Relationship fields become callable methods on returned entities:
 
 ```typescript
 // belongs-to: book → author
@@ -167,7 +154,7 @@ const author = book.author();       // → { name: 'Leo Tolstoy', ... }
 // one-to-many: author → books
 const books = tolstoy.books();      // → [{ title: 'War and Peace' }, ...]
 
-// Chain navigation
+// Chain
 const allByAuthor = book.author().books();
 ```
 
@@ -216,14 +203,6 @@ alice.score = 200;    // → UPDATE users SET score = 200 WHERE id = 1
 Zod validates every insert and update at runtime:
 
 ```typescript
-const db = new Database(':memory:', {
-  users: z.object({
-    name: z.string().min(1),
-    email: z.string().email(),
-    age: z.number().int().positive(),
-  }),
-});
-
 db.users.insert({ name: '', email: 'bad', age: -1 });  // throws ZodError
 ```
 
@@ -234,7 +213,7 @@ db.users.insert({ name: '', email: 'bad', age: -1 });  // throws ZodError
 ```typescript
 const db = new Database(':memory:', schemas, {
   indexes: {
-    users: ['email', ['name', 'role']],  // single + composite
+    users: ['email', ['name', 'role']],
     books: ['authorId', 'year'],
   },
 });
@@ -242,21 +221,13 @@ const db = new Database(':memory:', schemas, {
 
 ---
 
-## Change Tracking
+## Change Tracking & Events
 
 ```typescript
 const db = new Database(':memory:', schemas, { changeTracking: true });
-const changes = db.getChangesSince(0);
-// [{ table_name: 'users', row_id: 1, action: 'INSERT' }, ...]
-```
+db.getChangesSince(0);
 
----
-
-## Event Subscriptions
-
-```typescript
 db.users.subscribe('insert', (user) => console.log('New:', user.name));
-db.users.subscribe('update', (user) => console.log('Updated:', user.name));
 ```
 
 ---
@@ -270,41 +241,16 @@ const unsub = db.users.select()
     console.log('Admin list changed:', admins);
   }, { interval: 1000 });
 
-unsub(); // stop listening
+unsub();
 ```
 
 ---
 
-## Examples
-
-A single comprehensive example covers all features:
+## Examples & Tests
 
 ```bash
-bun examples/example.ts
-```
-
-Integration tests:
-
-```bash
-bun test
-```
-
----
-
-## Project Structure
-
-```
-src/
-  index.ts           — public exports
-  database.ts        — Database class
-  types.ts           — type definitions
-  schema.ts          — schema parsing, storage transforms
-  query-builder.ts   — fluent select/join/where/orderBy
-  proxy-query.ts     — db.query(c => {...}) proxy callback
-  ast.ts             — AST compiler for callback-style WHERE
-
-examples/            — standalone runnable scripts
-test/                — unit + integration tests
+bun examples/example.ts    # comprehensive demo
+bun test                    # 90 tests
 ```
 
 ---
@@ -319,7 +265,6 @@ test/                — unit + integration tests
 | `db.table.find(filter?)` | Array of matching rows |
 | `db.table.all()` | All rows |
 | `db.table.select(...cols?)` | Fluent query builder |
-| `db.table.select().where(filter).all()` | Fluent query with conditions |
 | `db.table.select().where({ $or: [...] })` | OR conditions |
 | `db.table.select().join(db.other, cols?).all()` | Fluent join (auto FK) |
 | `db.table.select().count()` | Count rows |

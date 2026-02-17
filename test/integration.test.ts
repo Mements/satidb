@@ -403,3 +403,95 @@ describe('Forests — Schema validation', () => {
         expect(tree.alive).toBe(true);
     });
 });
+
+// =============================================================================
+// 10. CONFIG-BASED RELATIONS (no z.lazy, no interfaces)
+// =============================================================================
+
+describe('Config-based relations', () => {
+    // Clean schemas — no z.lazy(), no interface annotations
+    const AuthorSchema = z.object({
+        name: z.string(),
+        country: z.string(),
+    });
+
+    const BookSchema = z.object({
+        title: z.string(),
+        year: z.number(),
+    });
+
+    const cdb = new Database(':memory:', {
+        authors: AuthorSchema,
+        books: BookSchema,
+    }, {
+        relations: {
+            books: { author: 'authors' },
+        },
+    });
+
+    const tolstoy = cdb.authors.insert({ name: 'Leo Tolstoy', country: 'Russia' });
+    const kafka = cdb.authors.insert({ name: 'Franz Kafka', country: 'Czech Republic' });
+    cdb.books.insert({ title: 'War and Peace', year: 1869, author: tolstoy } as any);
+    cdb.books.insert({ title: 'Anna Karenina', year: 1878, author: tolstoy } as any);
+    cdb.books.insert({ title: 'The Trial', year: 1925, author: kafka } as any);
+
+    test('insert with entity reference resolves FK', () => {
+        const books = cdb.books.all();
+        expect(books.length).toBe(3);
+        expect(books[0].authorId).toBe(tolstoy.id);
+    });
+
+    test('.find() with entity reference', () => {
+        const books = cdb.books.find({ author: tolstoy } as any);
+        expect(books.length).toBe(2);
+        expect(books.map(b => b.title).sort()).toEqual(['Anna Karenina', 'War and Peace']);
+    });
+
+    test('.get() with entity reference', () => {
+        const book = cdb.books.get({ author: kafka } as any);
+        expect(book?.title).toBe('The Trial');
+    });
+
+    test('lazy navigation: book.author()', () => {
+        const book = cdb.books.get({ title: 'War and Peace' })!;
+        const author = (book as any).author();
+        expect(author.name).toBe('Leo Tolstoy');
+        expect(author.country).toBe('Russia');
+    });
+
+    test('lazy navigation: author.books()', () => {
+        const author = cdb.authors.get({ name: 'Leo Tolstoy' })!;
+        const books = (author as any).books();
+        expect(books.length).toBe(2);
+    });
+
+    test('fluent join works', () => {
+        const rows = cdb.books.select('title', 'year')
+            .join(cdb.authors, ['name'])
+            .orderBy('year', 'asc')
+            .all();
+        expect(rows.length).toBe(3);
+        expect((rows[0] as any).authors_name).toBe('Leo Tolstoy');
+    });
+
+    test('proxy query works', () => {
+        const rows = cdb.query((c: any) => {
+            const { authors: a, books: b } = c;
+            return {
+                select: { author: a.name, book: b.title },
+                join: [[b.author, a.id]],
+                where: { [a.country]: 'Russia' },
+                orderBy: { [b.year]: 'asc' },
+            };
+        });
+        expect(rows.length).toBe(2);
+        expect((rows[0] as any).author).toBe('Leo Tolstoy');
+    });
+
+    test('$or works with config-based relations', () => {
+        const books = cdb.books.select()
+            .where({ $or: [{ year: 1869 }, { year: 1925 }] })
+            .all();
+        expect(books.length).toBe(2);
+    });
+});
