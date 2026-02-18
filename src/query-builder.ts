@@ -167,7 +167,7 @@ export class QueryBuilder<T extends Record<string, any>> {
     private singleExecutor: (sql: string, params: any[], raw: boolean) => any | null;
     private joinResolver: ((fromTable: string, toTable: string) => { fk: string; pk: string } | null) | null;
     private conditionResolver: ((conditions: Record<string, any>) => Record<string, any>) | null;
-    private revisionGetter: (() => number) | null;
+    private revisionGetter: (() => string) | null;
 
     constructor(
         tableName: string,
@@ -175,7 +175,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         singleExecutor: (sql: string, params: any[], raw: boolean) => any | null,
         joinResolver?: ((fromTable: string, toTable: string) => { fk: string; pk: string } | null) | null,
         conditionResolver?: ((conditions: Record<string, any>) => Record<string, any>) | null,
-        revisionGetter?: (() => number) | null,
+        revisionGetter?: (() => string) | null,
     ) {
         this.tableName = tableName;
         this.executor = executor;
@@ -459,9 +459,9 @@ export class QueryBuilder<T extends Record<string, any>> {
                 // Run lightweight fingerprint check
                 const fpRows = this.executor(fingerprintSQL.sql, fingerprintSQL.params, true);
                 const fpRow = fpRows[0] as any;
-                // Include in-memory revision in fingerprint.
-                // This ensures ALL changes (insert/update/delete) are detected.
-                const rev = this.revisionGetter?.() ?? 0;
+                // Include revision in fingerprint (combines in-memory counter + PRAGMA data_version).
+                // This detects ALL changes: same-process and cross-process.
+                const rev = this.revisionGetter?.() ?? '0';
                 const currentFingerprint = `${fpRow?._cnt ?? 0}:${fpRow?._max ?? 0}:${rev}`;
 
                 if (currentFingerprint !== lastFingerprint) {

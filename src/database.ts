@@ -36,6 +36,7 @@ class _Database<Schemas extends SchemaMap> {
 
     constructor(dbFile: string, schemas: Schemas, options: DatabaseOptions = {}) {
         this.db = new SqliteDatabase(dbFile);
+        this.db.run('PRAGMA journal_mode = WAL');  // WAL enables concurrent read + write
         this.db.run('PRAGMA foreign_keys = ON');
         this.schemas = schemas;
         this.options = options;
@@ -112,7 +113,7 @@ class _Database<Schemas extends SchemaMap> {
     }
 
     // ===========================================================================
-    // Revision Tracking (in-memory, zero overhead)
+    // Revision Tracking (in-memory + cross-process)
     // ===========================================================================
 
     /** Bump the revision counter for a table. Called on every write. */
@@ -120,9 +121,20 @@ class _Database<Schemas extends SchemaMap> {
         this._revisions[entityName] = (this._revisions[entityName] ?? 0) + 1;
     }
 
-    /** Get the current revision for a table. Used by QueryBuilder.subscribe() fingerprint. */
-    public _getRevision(entityName: string): number {
-        return this._revisions[entityName] ?? 0;
+    /**
+     * Get a composite revision string for a table.
+     *
+     * Combines two signals:
+     *  - In-memory counter: catches writes from THIS process (our CRUD methods bump it)
+     *  - PRAGMA data_version: catches writes from OTHER processes (SQLite bumps it
+     *    whenever another connection commits, but NOT for the current connection)
+     *
+     * Together they detect ALL changes regardless of source, with zero disk overhead.
+     */
+    public _getRevision(entityName: string): string {
+        const rev = this._revisions[entityName] ?? 0;
+        const dataVersion = (this.db.query('PRAGMA data_version').get() as any)?.data_version ?? 0;
+        return `${rev}:${dataVersion}`;
     }
 
     // ===========================================================================

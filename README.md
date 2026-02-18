@@ -236,30 +236,55 @@ unsub();
 ┌──────────────────────────────────────────────────┐
 │  Every {interval}ms:                             │
 │                                                  │
-│  1. Check in-memory revision counter (free)      │
+│  1. Check revision (in-memory + data_version)    │
 │  2. Run: SELECT COUNT(*), MAX(id)                │
 │     FROM users WHERE role = 'admin'              │
 │                                                  │
-│  3. Combine into fingerprint: "count:max:rev"    │
+│  3. Combine into fingerprint: "count:max:rev:dv" │
 │                                                  │
 │  4. If fingerprint changed → re-run full query   │
 │     and call your callback                       │
 └──────────────────────────────────────────────────┘
 ```
 
-Since `_Database` controls all writes, it bumps an in-memory revision counter on every insert, update, and delete. The fingerprint includes this counter, so **all changes are always detected** — no triggers, no WAL, no `_changes` table.
+Two signals combine to detect **all** changes from **any** source:
 
-| Operation | Detected | How |
+| Signal | Catches | How |
 |---|---|---|
-| INSERT | ✅ | MAX(id) increases + revision bumps |
-| DELETE | ✅ | COUNT changes + revision bumps |
-| UPDATE | ✅ | revision bumps |
+| **In-memory revision** | Same-process writes | Bumped by CRUD methods |
+| **PRAGMA data_version** | Cross-process writes | SQLite bumps it on external commits |
+
+| Operation | Detected | Source |
+|---|---|---|
+| INSERT | ✅ | Same or other process |
+| DELETE | ✅ | Same or other process |
+| UPDATE | ✅ | Same or other process |
+
+No triggers. No `_changes` table. Zero disk overhead. WAL mode is enabled by default for concurrent read/write.
+
+### Multi-process example
+
+```typescript
+// Process A — watches for new/edited messages
+const unsub = db.messages.select()
+  .orderBy('id', 'asc')
+  .subscribe((messages) => {
+    console.log('Messages:', messages);
+  }, { interval: 200 });
+
+// Process B — writes to the same DB file (different process)
+// sqlite3 chat.db "INSERT INTO messages (text, author) VALUES ('hello', 'Bob')"
+// → Process A's callback fires with updated message list!
+```
+
+Run `bun examples/messages-demo.ts` for a full working demo.
 
 **Use cases:**
 - Live dashboards (poll every 1-5s)
 - Real-time chat / message lists
 - Auto-refreshing data tables
 - Watching filtered subsets of data
+- Cross-process data synchronization
 
 ---
 
