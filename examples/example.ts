@@ -145,17 +145,17 @@ console.log('\n── 4. Lazy Navigation ──');
 
 // belongs-to: book → author (derived from author_id → `author()`)
 const warAndPeace = db.books.select().where({ title: 'War and Peace' }).get()!;
-const bookAuthor = (warAndPeace as any).author();
+const bookAuthor = warAndPeace.author()!;
 console.log(`"${warAndPeace.title}" by ${bookAuthor.name} (${bookAuthor.country})`);
 
 // one-to-many: author → books
-const dostoevskyBooks = (dostoevsky as any).books();
-console.log(`Dostoevsky's books: ${dostoevskyBooks.map((b: any) => b.title).join(', ')}`);
+const dostoevskyBooks = dostoevsky.books();
+console.log(`Dostoevsky's books: ${dostoevskyBooks.map(b => b.title).join(', ')}`);
 
 // Chain: get author, then their books
 const kafkaEntity = db.authors.select().where({ name: 'Franz Kafka' }).get()!;
-const kafkaBooks = (kafkaEntity as any).books();
-console.log(`Kafka's books: ${kafkaBooks.map((b: any) => b.title).join(', ')}`);
+const kafkaBooks = kafkaEntity.books();
+console.log(`Kafka's books: ${kafkaBooks.map(b => b.title).join(', ')}`);
 
 // =============================================================================
 // 7. FLUENT JOIN — select().join() with auto FK inference

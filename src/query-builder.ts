@@ -1,12 +1,8 @@
 import { z } from 'zod';
-import type { EntityAccessor, InferSchema } from './types';
 import {
     type ASTNode, type WhereCallback, type TypedColumnProxy, type FunctionProxy, type Operators,
     compileAST, wrapNode, createColumnProxy, createFunctionProxy, op,
 } from './ast';
-
-/** Extract the schema's inferred field keys from an EntityAccessor */
-type InferAccessorSchema<A> = A extends EntityAccessor<infer S> ? InferSchema<S> : never;
 
 // ---------- Internal Query Object (IQO) ----------
 
@@ -324,9 +320,9 @@ export class QueryBuilder<T extends Record<string, any>> {
      * db.trees.select('name').join('forests', 'forestId', ['name']).all()
      * ```
      */
-    join<A extends EntityAccessor<any>>(
-        accessor: A,
-        columns?: (keyof InferAccessorSchema<A> & string)[],
+    join(
+        accessor: { _tableName: string },
+        columns?: string[],
     ): this;
     join(
         table: string,
@@ -334,7 +330,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         columns?: string[],
         pk?: string,
     ): this;
-    join(tableOrAccessor: string | EntityAccessor<any>, fkOrCols?: string | string[], colsOrPk?: string[] | string, pk?: string): this {
+    join(tableOrAccessor: string | { _tableName: string }, fkOrCols?: string | string[], colsOrPk?: string[] | string, pk?: string): this {
         let table: string;
         let fromCol: string;
         let toCol: string;

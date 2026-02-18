@@ -10,8 +10,8 @@ import { z } from 'zod';
 import { QueryBuilder } from './query-builder';
 import { executeProxyQuery, type ProxyQueryResult } from './proxy-query';
 import type {
-    SchemaMap, DatabaseOptions, Relationship,
-    EntityAccessor, TypedAccessors, AugmentedEntity, UpdateBuilder,
+    SchemaMap, DatabaseOptions, Relationship, RelationsConfig,
+    EntityAccessor, TypedAccessors, TypedNavAccessors, AugmentedEntity, UpdateBuilder,
     ProxyColumns, InferSchema,
 } from './types';
 import { asZodObject } from './types';
@@ -481,11 +481,11 @@ class _Database<Schemas extends SchemaMap> extends EventEmitter {
 // Public Export
 // =============================================================================
 
-const Database = _Database as unknown as new <S extends SchemaMap>(
-    dbFile: string, schemas: S, options?: DatabaseOptions
-) => _Database<S> & TypedAccessors<S>;
+const Database = _Database as unknown as new <S extends SchemaMap, const R extends RelationsConfig = {}>(
+    dbFile: string, schemas: S, options?: DatabaseOptions<R>
+) => _Database<S> & TypedNavAccessors<S, R>;
 
-type Database<S extends SchemaMap> = _Database<S> & TypedAccessors<S>;
+type Database<S extends SchemaMap, R extends RelationsConfig = {}> = _Database<S> & TypedNavAccessors<S, R>;
 
 export { Database };
 export type { Database as DatabaseType };
