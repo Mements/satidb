@@ -52,7 +52,6 @@ export function insert<T extends Record<string, any>>(ctx: DatabaseContext, enti
     const newEntity = getById(ctx, entityName, result.lastInsertRowid as number);
     if (!newEntity) throw new Error('Failed to retrieve entity after insertion');
 
-    ctx.bumpRevision(entityName);
     return newEntity;
 }
 
@@ -65,7 +64,6 @@ export function update<T extends Record<string, any>>(ctx: DatabaseContext, enti
     const setClause = Object.keys(transformed).map(key => `${key} = ?`).join(', ');
     ctx.db.query(`UPDATE ${entityName} SET ${setClause} WHERE id = ?`).run(...Object.values(transformed), id);
 
-    ctx.bumpRevision(entityName);
     return getById(ctx, entityName, id);
 }
 
@@ -85,9 +83,7 @@ export function updateWhere(ctx: DatabaseContext, entityName: string, data: Reco
         ...whereValues
     );
 
-    const affected = (result as any).changes ?? 0;
-    if (affected > 0) ctx.bumpRevision(entityName);
-    return affected;
+    return (result as any).changes ?? 0;
 }
 
 export function createUpdateBuilder(ctx: DatabaseContext, entityName: string, data: Record<string, any>): UpdateBuilder<any> {
@@ -121,6 +117,5 @@ export function deleteEntity(ctx: DatabaseContext, entityName: string, id: numbe
     const entity = getById(ctx, entityName, id);
     if (entity) {
         ctx.db.query(`DELETE FROM ${entityName} WHERE id = ?`).run(id);
-        ctx.bumpRevision(entityName);
     }
 }

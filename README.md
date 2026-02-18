@@ -41,7 +41,6 @@ const db = new Database(':memory:', {
   relations: {
     books: { author_id: 'authors' },
   },
-  pollInterval: 300, // global default for .subscribe() and .each() (default: 500ms)
 });
 ```
 
@@ -185,6 +184,60 @@ alice.score = 200;    // → UPDATE users SET score = 200 WHERE id = 1
 
 ---
 
+## Change Listeners — `db.table.on()`
+
+Register listeners for insert, update, and delete events. Uses SQLite triggers + a single global poller — no per-listener overhead.
+
+```typescript
+// Listen for new users
+const unsub = db.users.on('insert', (user) => {
+  console.log('New user:', user.name, user.email);
+});
+
+// Listen for updates
+db.users.on('update', (user) => {
+  console.log('Updated:', user.name);
+});
+
+// Listen for deletes (row is gone, only id available)
+db.users.on('delete', ({ id }) => {
+  console.log('Deleted user id:', id);
+});
+
+// Stop listening
+unsub();
+```
+
+### How it works
+
+```
+┌──────────────────────────────────────────────────┐
+│  SQLite triggers log every mutation:             │
+│                                                  │
+│  INSERT → _changes (tbl, op='insert', row_id)    │
+│  UPDATE → _changes (tbl, op='update', row_id)    │
+│  DELETE → _changes (tbl, op='delete', row_id)    │
+│                                                  │
+│  Single global poller (default 100ms):           │
+│  1. SELECT * FROM _changes WHERE id > @watermark │
+│  2. Re-fetch affected rows                       │
+│  3. Dispatch to registered on() listeners        │
+│  4. Advance watermark, clean up consumed entries  │
+└──────────────────────────────────────────────────┘
+```
+
+| Feature | Detail |
+|---|---|
+| **Granularity** | Row-level (knows exactly which row changed) |
+| **Operations** | INSERT, UPDATE, DELETE — all detected |
+| **Cross-process** | ✅ Triggers fire regardless of which connection writes |
+| **Overhead** | Single poller for all listeners, no per-listener timers |
+| **Cleanup** | Consumed changes auto-deleted after dispatch |
+
+Run `bun examples/messages-demo.ts` for a full working demo.
+
+---
+
 ## Schema Validation
 
 Zod validates every insert and update at runtime:
@@ -237,110 +290,6 @@ const db = new Database(':memory:', schemas, {
 
 ---
 
-## Reactivity
-
-Two complementary APIs for watching data changes:
-
-| API | Receives | Fires on | Use case |
-|---|---|---|---|
-| **`select().each(cb)`** | One row at a time, in order | New inserts only | Message streams, event queues |
-| **`select().subscribe(cb)`** | Full result snapshot | Any change (insert/update/delete) | Live dashboards, filtered views |
-
----
-
-### Row Stream — `select().each(callback)`
-
-Streams new rows one at a time, in insertion order. Only emits rows created **after** subscription starts.
-
-```typescript
-const unsub = db.messages.select().each((msg) => {
-  console.log(`${msg.author}: ${msg.text}`);
-}, { interval: 200 });
-
-// Later: stop listening
-unsub();
-```
-
-If 5 messages arrive between polls, the callback fires 5 times — once per row, in order. Uses a watermark (`id > lastSeen`) internally.
-
----
-
-### Snapshot — `select().subscribe(callback)`
-
-Returns the **full query result** whenever data changes. Detects all mutations (inserts, updates, deletes).
-
-```typescript
-const unsub = db.users.select()
-  .where({ role: 'admin' })
-  .orderBy('name', 'asc')
-  .subscribe((admins) => {
-    console.log('Admin list:', admins.map(a => a.name));
-  }, { interval: 1000 });
-
-// Stop watching
-unsub();
-```
-
-**Options:**
-
-| Option | Default | Description |
-|---|---|---|
-| `interval` | `500` | Polling interval in milliseconds |
-| `immediate` | `true` | Fire callback immediately with current data |
-
-### How it works
-
-```
-┌──────────────────────────────────────────────────┐
-│  Every {interval}ms:                             │
-│                                                  │
-│  1. Check revision (in-memory + trigger seq)     │
-│  2. If revision changed → re-run full query      │
-│     and call your callback                       │
-└──────────────────────────────────────────────────┘
-```
-
-Two signals combine to detect **all** changes from **any** source:
-
-| Signal | Catches | How |
-|---|---|---|
-| **In-memory revision** | Same-process writes | Bumped by CRUD methods |
-| **Trigger-based seq** | Cross-process writes | INSERT/UPDATE/DELETE triggers on each table bump a counter in `_satidb_changes` |
-
-| Operation | Detected | Source |
-|---|---|---|
-| INSERT | ✅ | Same or other process |
-| DELETE | ✅ | Same or other process |
-| UPDATE | ✅ | Same or other process |
-
-No polling of `PRAGMA data_version`. Trigger-based change tracking per table means zero false positives from unrelated tables. WAL mode is enabled by default for concurrent read/write.
-
-### Multi-process example
-
-```typescript
-// Process A — watches for new/edited messages
-const unsub = db.messages.select()
-  .orderBy('id', 'asc')
-  .subscribe((messages) => {
-    console.log('Messages:', messages);
-  }, { interval: 200 });
-
-// Process B — writes to the same DB file (different process)
-// sqlite3 chat.db "INSERT INTO messages (text, author) VALUES ('hello', 'Bob')"
-// → Process A's callback fires with updated message list!
-```
-
-Run `bun examples/messages-demo.ts` for a full working demo.
-
-**Use cases:**
-- Live dashboards (poll every 1-5s)
-- Real-time chat / message lists
-- Auto-refreshing data tables
-- Watching filtered subsets of data
-- Cross-process data synchronization
-
----
-
 ## Transactions
 
 ```typescript
@@ -357,9 +306,9 @@ const result = db.transaction(() => {
 ## Examples & Tests
 
 ```bash
-bun examples/messages-demo.ts  # .each() vs .subscribe() demo
+bun examples/messages-demo.ts  # on() change listener demo
 bun examples/example.ts        # comprehensive demo
-bun test                        # 100 tests
+bun test                        # 99 tests
 ```
 
 ---
@@ -387,9 +336,10 @@ bun test                        # 100 tests
 | `entity.navMethod()` | Lazy navigation (FK name minus `_id`) |
 | `entity.update(data)` | Update entity in-place |
 | `entity.delete()` | Delete entity |
-| **Reactivity** | |
-| `select().each(cb, opts?)` | Stream new rows one at a time, in order |
-| `select().subscribe(cb, opts?)` | Watch query result snapshot (all mutations) |
+| **Change Listeners** | |
+| `db.table.on('insert', cb)` | Listen for new rows (receives full row) |
+| `db.table.on('update', cb)` | Listen for updated rows (receives full row) |
+| `db.table.on('delete', cb)` | Listen for deleted rows (receives `{ id }`) |
 | **Transactions** | |
 | `db.transaction(fn)` | Atomic operation with auto-rollback |
 

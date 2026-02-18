@@ -372,82 +372,75 @@ describe('Schema validation', () => {
 });
 
 // =============================================================================
-// 11. SUBSCRIBE
+// 11. CHANGE LISTENERS — db.table.on()
 // =============================================================================
 
-describe('Subscribe (smart polling)', () => {
-    test('select().subscribe() detects inserts', async () => {
-        let callCount = 0;
-        let lastRows: any[] = [];
-        const unsub = db.forests.select()
-            .where({ name: 'PollTest' })
-            .subscribe((rows) => {
-                callCount++;
-                lastRows = rows;
-            }, { interval: 30 });
-
-        // Immediate first call (no data yet)
-        expect(callCount).toBe(1);
-        expect(lastRows.length).toBe(0);
-
-        // Insert a matching row
-        db.forests.insert({ name: 'PollTest', address: 'Here' });
-        await new Promise(r => setTimeout(r, 100));
-
-        // Should have fired again with new data
-        expect(callCount).toBeGreaterThan(1);
-        expect(lastRows.length).toBe(1);
-        expect(lastRows[0].name).toBe('PollTest');
-
-        unsub();
-    });
-});
-// =============================================================================
-// 11b. ROW STREAM — .each()
-// =============================================================================
-
-describe('Row stream (.each)', () => {
-    test('emits new inserts individually in order', async () => {
+describe('Change listeners (on)', () => {
+    test('on("insert") fires for new rows', async () => {
         const received: string[] = [];
-        const unsub = db.forests.select().each((forest) => {
+        const unsub = db.forests.on('insert', (forest) => {
             received.push(forest.name);
-        }, { interval: 30 });
+        });
 
-        db.forests.insert({ name: 'EachTest1', address: 'A' });
-        db.forests.insert({ name: 'EachTest2', address: 'B' });
-        await new Promise(r => setTimeout(r, 100));
-        db.forests.insert({ name: 'EachTest3', address: 'C' });
-        await new Promise(r => setTimeout(r, 100));
+        db.forests.insert({ name: 'OnInsert1', address: 'A' });
+        db.forests.insert({ name: 'OnInsert2', address: 'B' });
+
+        // Wait for poller to pick up changes
+        await new Promise(r => setTimeout(r, 200));
+
+        expect(received).toContain('OnInsert1');
+        expect(received).toContain('OnInsert2');
+        expect(received.indexOf('OnInsert1')).toBeLessThan(received.indexOf('OnInsert2'));
 
         unsub();
-
-        expect(received).toContain('EachTest1');
-        expect(received).toContain('EachTest2');
-        expect(received).toContain('EachTest3');
-        expect(received.indexOf('EachTest1')).toBeLessThan(received.indexOf('EachTest2'));
-        expect(received.indexOf('EachTest2')).toBeLessThan(received.indexOf('EachTest3'));
     });
 
-    test('does not emit rows that existed before subscription', async () => {
-        const existingCount = db.forests.select().count();
-        expect(existingCount).toBeGreaterThan(0);
+    test('on("update") fires for updated rows', async () => {
+        const forest = db.forests.insert({ name: 'OnUpdate1', address: 'Before' });
 
-        const received: any[] = [];
-        const unsub = db.forests.select().each((forest) => {
-            received.push(forest);
-        }, { interval: 30 });
+        const received: string[] = [];
+        const unsub = db.forests.on('update', (row) => {
+            received.push(row.address);
+        });
 
-        // Wait — no new inserts
-        await new Promise(r => setTimeout(r, 100));
-        expect(received.length).toBe(0);
+        db.forests.update(forest.id, { address: 'After' });
+        await new Promise(r => setTimeout(r, 200));
 
-        // Now insert one
-        db.forests.insert({ name: 'EachTestNew', address: 'New' });
-        await new Promise(r => setTimeout(r, 100));
+        expect(received).toContain('After');
+        unsub();
+    });
+
+    test('on("delete") fires with { id } for deleted rows', async () => {
+        const forest = db.forests.insert({ name: 'OnDelete1', address: 'X' });
+
+        const received: number[] = [];
+        const unsub = db.forests.on('delete', (row) => {
+            received.push(row.id);
+        });
+
+        db.forests.delete(forest.id);
+        await new Promise(r => setTimeout(r, 200));
+
+        expect(received).toContain(forest.id);
+        unsub();
+    });
+
+    test('unsubscribe stops listener', async () => {
+        const received: string[] = [];
+        const unsub = db.forests.on('insert', (forest) => {
+            received.push(forest.name);
+        });
+
+        db.forests.insert({ name: 'BeforeUnsub', address: 'A' });
+        await new Promise(r => setTimeout(r, 200));
         expect(received.length).toBe(1);
-        expect(received[0].name).toBe('EachTestNew');
 
         unsub();
+
+        db.forests.insert({ name: 'AfterUnsub', address: 'B' });
+        await new Promise(r => setTimeout(r, 200));
+        // Should still be 1 — listener was removed
+        expect(received.length).toBe(1);
     });
 });
 

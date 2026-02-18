@@ -31,8 +31,8 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
      */
     relations?: R;
     /**
-     * Global polling interval (ms) for `.on()` and `.subscribe()`.
-     * Can be overridden per-call. Default: 500ms.
+     * Global polling interval (ms) for `.on()` change listeners.
+     * A single poller serves all listeners. Default: 100ms.
      */
     pollInterval?: number;
 };
@@ -149,6 +149,8 @@ export type NavEntityAccessor<
     upsert: (conditions?: Partial<z.infer<S[Table & keyof S]>>, data?: Partial<z.infer<S[Table & keyof S]>>) => NavEntity<S, R, Table>;
     delete: (id: number) => void;
     select: (...cols: (keyof z.infer<S[Table & keyof S]> & string)[]) => QueryBuilder<NavEntity<S, R, Table>>;
+    on: ((event: 'insert' | 'update', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>) => () => void) &
+    ((event: 'delete', callback: (row: { id: number }) => void | Promise<void>) => () => void);
     _tableName: string;
     readonly _schema?: S[Table & keyof S];
 };
@@ -168,12 +170,16 @@ export type AugmentedEntity<S extends z.ZodType<any>> = InferSchema<S> & {
     delete: () => void;
 };
 
+export type ChangeEvent = 'insert' | 'update' | 'delete';
+
 export type EntityAccessor<S extends z.ZodType<any>> = {
     insert: (data: EntityData<S>) => AugmentedEntity<S>;
     update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((data: Partial<EntityData<S>>) => UpdateBuilder<AugmentedEntity<S>>);
     upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
     delete: (id: number) => void;
     select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
+    on: ((event: 'insert' | 'update', callback: (row: AugmentedEntity<S>) => void | Promise<void>) => () => void) &
+    ((event: 'delete', callback: (row: { id: number }) => void | Promise<void>) => () => void);
     _tableName: string;
     readonly _schema?: S;
 };

@@ -3,7 +3,7 @@
  *
  * Contains:
  * - IQO (Internal Query Object) types and SQL compiler
- * - QueryBuilder class (fluent chaining, subscribe, each)
+ * - QueryBuilder class (fluent chaining, pure query execution)
  * - Proxy query system (db.query() with destructured table aliases)
  * - QueryBuilder factory (wires executors, resolvers, and loaders)
  */
@@ -178,9 +178,7 @@ export class QueryBuilder<T extends Record<string, any>> {
     private singleExecutor: (sql: string, params: any[], raw: boolean) => any | null;
     private joinResolver: ((fromTable: string, toTable: string) => { fk: string; pk: string } | null) | null;
     private conditionResolver: ((conditions: Record<string, any>) => Record<string, any>) | null;
-    private revisionGetter: (() => string) | null;
     private eagerLoader: ((parentTable: string, relation: string, parentIds: number[]) => { key: string; groups: Map<number, any[]> } | null) | null;
-    private defaultPollInterval: number;
 
     constructor(
         tableName: string,
@@ -188,18 +186,14 @@ export class QueryBuilder<T extends Record<string, any>> {
         singleExecutor: (sql: string, params: any[], raw: boolean) => any | null,
         joinResolver?: ((fromTable: string, toTable: string) => { fk: string; pk: string } | null) | null,
         conditionResolver?: ((conditions: Record<string, any>) => Record<string, any>) | null,
-        revisionGetter?: (() => string) | null,
         eagerLoader?: ((parentTable: string, relation: string, parentIds: number[]) => { key: string; groups: Map<number, any[]> } | null) | null,
-        pollInterval?: number,
     ) {
         this.tableName = tableName;
         this.executor = executor;
         this.singleExecutor = singleExecutor;
         this.joinResolver = joinResolver ?? null;
         this.conditionResolver = conditionResolver ?? null;
-        this.revisionGetter = revisionGetter ?? null;
         this.eagerLoader = eagerLoader ?? null;
-        this.defaultPollInterval = pollInterval ?? 500;
         this.iqo = {
             selects: [],
             wheres: [],
@@ -443,130 +437,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         return (results[0] as any)?.count ?? 0;
     }
 
-    // ---------- Subscribe (Smart Polling) ----------
 
-    /**
-     * Subscribe to query result changes using smart interval-based polling.
-     *
-     * Uses trigger-based change detection combined with an in-memory revision
-     * counter to detect ALL changes (inserts, updates, deletes) with minimal overhead.
-     */
-    subscribe(
-        callback: (rows: T[]) => void | Promise<void>,
-        options: { interval?: number; immediate?: boolean } = {},
-    ): () => void {
-        const { interval = this.defaultPollInterval, immediate = true } = options;
-
-        let lastRevision: string | null = null;
-        let stopped = false;
-
-        const poll = async () => {
-            if (stopped) return;
-            try {
-                const rev = this.revisionGetter?.() ?? '0';
-                if (rev !== lastRevision) {
-                    lastRevision = rev;
-                    const rows = this.all();
-                    await callback(rows);
-                }
-            } catch {
-                // Silently skip on error (table might be in transition)
-            }
-            if (!stopped) setTimeout(poll, interval);
-        };
-
-        if (immediate) {
-            poll();
-        } else {
-            setTimeout(poll, interval);
-        }
-
-        return () => { stopped = true; };
-    }
-
-    /**
-     * Stream new rows one at a time via a watermark (last seen id).
-     *
-     * Unlike `.subscribe()` (which gives you an array snapshot), `.each()`
-     * calls your callback once per new row, in insertion order.
-     */
-    each(
-        callback: (row: T) => void | Promise<void>,
-        options: { interval?: number } = {},
-    ): () => void {
-        const { interval = this.defaultPollInterval } = options;
-
-        const userWhere = this.buildWhereClause();
-
-        const maxRows = this.executor(
-            `SELECT MAX(id) as _max FROM ${this.tableName} ${userWhere.sql ? `WHERE ${userWhere.sql}` : ''}`,
-            userWhere.params,
-            true
-        );
-        let lastMaxId: number = (maxRows[0] as any)?._max ?? 0;
-        let lastRevision = this.revisionGetter?.() ?? '0';
-        let stopped = false;
-
-        const poll = async () => {
-            if (stopped) return;
-
-            const rev = this.revisionGetter?.() ?? '0';
-            if (rev !== lastRevision) {
-                lastRevision = rev;
-
-                const params = [...userWhere.params, lastMaxId];
-                const whereClause = userWhere.sql
-                    ? `WHERE ${userWhere.sql} AND id > ? ORDER BY id ASC`
-                    : `WHERE id > ? ORDER BY id ASC`;
-                const sql = `SELECT * FROM ${this.tableName} ${whereClause}`;
-
-                const newRows = this.executor(sql, params, false);
-
-                for (const row of newRows) {
-                    if (stopped) return;
-                    await callback(row as T);
-                    lastMaxId = (row as any).id;
-                }
-            }
-
-            if (!stopped) setTimeout(poll, interval);
-        };
-
-        setTimeout(poll, interval);
-        return () => { stopped = true; };
-    }
-
-    /** Compile the IQO's WHERE conditions into a SQL fragment + params (without the WHERE keyword). */
-    private buildWhereClause(): { sql: string; params: any[] } {
-        const params: any[] = [];
-
-        if (this.iqo.whereAST) {
-            const compiled = compileAST(this.iqo.whereAST);
-            return { sql: compiled.sql, params: compiled.params };
-        }
-
-        if (this.iqo.wheres.length > 0) {
-            const whereParts: string[] = [];
-            for (const w of this.iqo.wheres) {
-                if (w.operator === 'IN') {
-                    const arr = w.value as any[];
-                    if (arr.length === 0) {
-                        whereParts.push('1 = 0');
-                    } else {
-                        const placeholders = arr.map(() => '?').join(', ');
-                        whereParts.push(`${w.field} IN (${placeholders})`);
-                        params.push(...arr.map(transformValueForStorage));
-                    }
-                } else {
-                    whereParts.push(`${w.field} ${w.operator} ?`);
-                    params.push(transformValueForStorage(w.value));
-                }
-            }
-            return { sql: whereParts.join(' AND '), params };
-        }
-
-        return { sql: '', params: [] };
-    }
 
     // ---------- Thenable (async/await support) ----------
 
@@ -888,8 +759,6 @@ export function createQueryBuilder(ctx: DatabaseContext, entityName: string, ini
         return null;
     };
 
-    const revisionGetter = () => ctx.getRevision(entityName);
-
     const conditionResolver = (conditions: Record<string, any>): Record<string, any> => {
         const resolved: Record<string, any> = {};
         for (const [key, value] of Object.entries(conditions)) {
@@ -959,7 +828,7 @@ export function createQueryBuilder(ctx: DatabaseContext, entityName: string, ini
         return null;
     };
 
-    const builder = new QueryBuilder(entityName, executor, singleExecutor, joinResolver, conditionResolver, revisionGetter, eagerLoader, ctx.pollInterval);
+    const builder = new QueryBuilder(entityName, executor, singleExecutor, joinResolver, conditionResolver, eagerLoader);
     if (initialCols.length > 0) builder.select(...initialCols);
     return builder;
 }

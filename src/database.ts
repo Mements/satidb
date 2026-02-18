@@ -11,7 +11,7 @@ import { QueryBuilder, executeProxyQuery, createQueryBuilder, type ProxyQueryRes
 import type {
     SchemaMap, DatabaseOptions, Relationship, RelationsConfig,
     EntityAccessor, TypedAccessors, TypedNavAccessors, AugmentedEntity, UpdateBuilder,
-    ProxyColumns, InferSchema,
+    ProxyColumns, InferSchema, ChangeEvent,
 } from './types';
 import { asZodObject } from './types';
 import {
@@ -19,6 +19,7 @@ import {
     getStorableFields,
     zodTypeToSqlType,
 } from './schema';
+import { transformFromStorage } from './schema';
 import type { DatabaseContext } from './context';
 import { buildWhereClause } from './helpers';
 import { attachMethods } from './entity';
@@ -31,18 +32,32 @@ import {
 // Database Class
 // =============================================================================
 
+type Listener = {
+    table: string;
+    event: ChangeEvent;
+    callback: (row: any) => void | Promise<void>;
+};
+
 class _Database<Schemas extends SchemaMap> {
     private db: SqliteDatabase;
     private schemas: Schemas;
     private relationships: Relationship[];
     private options: DatabaseOptions;
-    private pollInterval: number;
-
-    /** In-memory revision counter per table — same-process fast path. */
-    private _revisions: Record<string, number> = {};
 
     /** Shared context for extracted modules. */
     private _ctx: DatabaseContext;
+
+    /** Registered change listeners. */
+    private _listeners: Listener[] = [];
+
+    /** Watermark: last processed change id from _changes table. */
+    private _changeWatermark: number = 0;
+
+    /** Global poll timer (single loop for all listeners). */
+    private _pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    /** Poll interval in ms. */
+    private _pollInterval: number;
 
     constructor(dbFile: string, schemas: Schemas, options: DatabaseOptions = {}) {
         this.db = new SqliteDatabase(dbFile);
@@ -50,7 +65,7 @@ class _Database<Schemas extends SchemaMap> {
         this.db.run('PRAGMA foreign_keys = ON');
         this.schemas = schemas;
         this.options = options;
-        this.pollInterval = options.pollInterval ?? 500;
+        this._pollInterval = options.pollInterval ?? 100;
         this.relationships = options.relations ? parseRelationsConfig(options.relations, schemas) : [];
 
         // Build the context that extracted modules use
@@ -60,9 +75,6 @@ class _Database<Schemas extends SchemaMap> {
             relationships: this.relationships,
             attachMethods: (name, entity) => attachMethods(this._ctx, name, entity),
             buildWhereClause: (conds, prefix) => buildWhereClause(conds, prefix),
-            bumpRevision: (name) => this._bumpRevision(name),
-            getRevision: (name) => this._getRevision(name),
-            pollInterval: this.pollInterval,
         };
 
         this.initializeTables();
@@ -82,6 +94,9 @@ class _Database<Schemas extends SchemaMap> {
                 upsert: (conditions, data) => upsert(this._ctx, entityName, data, conditions),
                 delete: (id) => deleteEntity(this._ctx, entityName, id),
                 select: (...cols: string[]) => createQueryBuilder(this._ctx, entityName, cols),
+                on: (event: ChangeEvent, callback: (row: any) => void | Promise<void>) => {
+                    return this._registerListener(entityName, event, callback);
+                },
                 _tableName: entityName,
             };
             (this as any)[key] = accessor;
@@ -114,29 +129,44 @@ class _Database<Schemas extends SchemaMap> {
     /**
      * Initialize per-table change tracking using triggers.
      *
-     * Creates a `_satidb_changes` table with one row per user table and a monotonic `seq` counter.
-     * INSERT/UPDATE/DELETE triggers on each user table auto-increment the seq.
-     * This enables table-specific, cross-process change detection.
+     * Creates a `_changes` table that logs every insert/update/delete with
+     * the table name, operation, and affected row id. This enables
+     * row-level change detection for the `on()` API.
      */
     private initializeChangeTracking(): void {
-        this.db.run(`CREATE TABLE IF NOT EXISTS _satidb_changes (
-            tbl TEXT PRIMARY KEY,
-            seq INTEGER NOT NULL DEFAULT 0
+        this.db.run(`CREATE TABLE IF NOT EXISTS _changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tbl TEXT NOT NULL,
+            op TEXT NOT NULL,
+            row_id INTEGER NOT NULL
         )`);
 
         for (const entityName of Object.keys(this.schemas)) {
-            this.db.run(`INSERT OR IGNORE INTO _satidb_changes (tbl, seq) VALUES (?, 0)`, entityName);
+            // INSERT trigger — logs NEW.id
+            this.db.run(`CREATE TRIGGER IF NOT EXISTS _trg_${entityName}_insert
+                AFTER INSERT ON ${entityName}
+                BEGIN
+                    INSERT INTO _changes (tbl, op, row_id) VALUES ('${entityName}', 'insert', NEW.id);
+                END`);
 
-            for (const op of ['insert', 'update', 'delete'] as const) {
-                const triggerName = `_satidb_${entityName}_${op}`;
-                const event = op.toUpperCase();
-                this.db.run(`CREATE TRIGGER IF NOT EXISTS ${triggerName}
-                    AFTER ${event} ON ${entityName}
-                    BEGIN
-                        UPDATE _satidb_changes SET seq = seq + 1 WHERE tbl = '${entityName}';
-                    END`);
-            }
+            // UPDATE trigger — logs NEW.id (post-update row)
+            this.db.run(`CREATE TRIGGER IF NOT EXISTS _trg_${entityName}_update
+                AFTER UPDATE ON ${entityName}
+                BEGIN
+                    INSERT INTO _changes (tbl, op, row_id) VALUES ('${entityName}', 'update', NEW.id);
+                END`);
+
+            // DELETE trigger — logs OLD.id (row that was deleted)
+            this.db.run(`CREATE TRIGGER IF NOT EXISTS _trg_${entityName}_delete
+                AFTER DELETE ON ${entityName}
+                BEGIN
+                    INSERT INTO _changes (tbl, op, row_id) VALUES ('${entityName}', 'delete', OLD.id);
+                END`);
         }
+
+        // Initialize watermark to current max (skip replaying historical changes)
+        const row = this.db.query('SELECT MAX(id) as maxId FROM _changes').get() as any;
+        this._changeWatermark = row?.maxId ?? 0;
     }
 
     private runMigrations(): void {
@@ -165,18 +195,75 @@ class _Database<Schemas extends SchemaMap> {
     }
 
     // =========================================================================
-    // Revision Tracking
+    // Change Listeners — db.table.on('insert' | 'update' | 'delete', cb)
     // =========================================================================
 
-    private _bumpRevision(entityName: string): void {
-        this._revisions[entityName] = (this._revisions[entityName] ?? 0) + 1;
+    private _registerListener(table: string, event: ChangeEvent, callback: (row: any) => void | Promise<void>): () => void {
+        const listener: Listener = { table, event, callback };
+        this._listeners.push(listener);
+        this._startPolling();
+
+        return () => {
+            const idx = this._listeners.indexOf(listener);
+            if (idx >= 0) this._listeners.splice(idx, 1);
+            if (this._listeners.length === 0) this._stopPolling();
+        };
     }
 
-    public _getRevision(entityName: string): string {
-        const rev = this._revisions[entityName] ?? 0;
-        const row = this.db.query('SELECT seq FROM _satidb_changes WHERE tbl = ?').get(entityName) as any;
-        const seq = row?.seq ?? 0;
-        return `${rev}:${seq}`;
+    private _startPolling(): void {
+        if (this._pollTimer) return;
+        this._pollTimer = setInterval(() => this._processChanges(), this._pollInterval);
+    }
+
+    private _stopPolling(): void {
+        if (this._pollTimer) {
+            clearInterval(this._pollTimer);
+            this._pollTimer = null;
+        }
+    }
+
+    /**
+     * Core change dispatch loop.
+     *
+     * Reads all new entries from `_changes` since our watermark,
+     * groups them, re-fetches affected rows, and dispatches to
+     * registered listeners. Cleans up consumed changes.
+     */
+    private _processChanges(): void {
+        const changes = this.db.query(
+            'SELECT id, tbl, op, row_id FROM _changes WHERE id > ? ORDER BY id'
+        ).all(this._changeWatermark) as { id: number; tbl: string; op: string; row_id: number }[];
+
+        if (changes.length === 0) return;
+
+        for (const change of changes) {
+            const listeners = this._listeners.filter(
+                l => l.table === change.tbl && l.event === change.op
+            );
+
+            if (listeners.length > 0) {
+                if (change.op === 'delete') {
+                    // Row is gone — pass just the id
+                    const payload = { id: change.row_id };
+                    for (const l of listeners) {
+                        try { l.callback(payload); } catch { /* listener error */ }
+                    }
+                } else {
+                    // insert or update — re-fetch the current row
+                    const row = getById(this._ctx, change.tbl, change.row_id);
+                    if (row) {
+                        for (const l of listeners) {
+                            try { l.callback(row); } catch { /* listener error */ }
+                        }
+                    }
+                }
+            }
+
+            this._changeWatermark = change.id;
+        }
+
+        // Clean up consumed changes
+        this.db.run('DELETE FROM _changes WHERE id <= ?', this._changeWatermark);
     }
 
     // =========================================================================
