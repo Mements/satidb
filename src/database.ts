@@ -40,6 +40,7 @@ type Listener = {
 
 class _Database<Schemas extends SchemaMap> {
     private db: SqliteDatabase;
+    private _reactive: boolean;
     private schemas: Schemas;
     private relationships: Relationship[];
     private options: DatabaseOptions;
@@ -65,6 +66,7 @@ class _Database<Schemas extends SchemaMap> {
         this.db.run('PRAGMA foreign_keys = ON');
         this.schemas = schemas;
         this.options = options;
+        this._reactive = options.reactive !== false; // default true
         this._pollInterval = options.pollInterval ?? 100;
         this.relationships = options.relations ? parseRelationsConfig(options.relations, schemas) : [];
 
@@ -78,7 +80,7 @@ class _Database<Schemas extends SchemaMap> {
         };
 
         this.initializeTables();
-        this.initializeChangeTracking();
+        if (this._reactive) this.initializeChangeTracking();
         this.runMigrations();
         if (options.indexes) this.createIndexes(options.indexes);
 
@@ -199,6 +201,12 @@ class _Database<Schemas extends SchemaMap> {
     // =========================================================================
 
     private _registerListener(table: string, event: ChangeEvent, callback: (row: any) => void | Promise<void>): () => void {
+        if (!this._reactive) {
+            throw new Error(
+                'Change listeners are disabled. Set { reactive: true } (or omit it) in Database options to enable .on().'
+            );
+        }
+
         const listener: Listener = { table, event, callback };
         this._listeners.push(listener);
         this._startPolling();
@@ -225,16 +233,19 @@ class _Database<Schemas extends SchemaMap> {
     /**
      * Core change dispatch loop.
      *
-     * Reads all new entries from `_changes` since our watermark,
-     * groups them, re-fetches affected rows, and dispatches to
-     * registered listeners. Cleans up consumed changes.
+     * Fast path: checks MAX(id) against watermark first — if equal,
+     * there are no new changes and we skip entirely (no row materialization).
+     * Only fetches actual change rows when something has changed.
      */
     private _processChanges(): void {
+        // Fast path: check if anything changed at all (single scalar, index-only)
+        const head = this.db.query('SELECT MAX(id) as m FROM _changes').get() as any;
+        const maxId: number = head?.m ?? 0;
+        if (maxId <= this._changeWatermark) return;
+
         const changes = this.db.query(
             'SELECT id, tbl, op, row_id FROM _changes WHERE id > ? ORDER BY id'
         ).all(this._changeWatermark) as { id: number; tbl: string; op: string; row_id: number }[];
-
-        if (changes.length === 0) return;
 
         for (const change of changes) {
             const listeners = this._listeners.filter(

@@ -442,8 +442,27 @@ describe('Change listeners (on)', () => {
         // Should still be 1 — listener was removed
         expect(received.length).toBe(1);
     });
-});
 
+    test('reactive: false disables triggers and .on() throws', () => {
+        const nonReactiveDb = new Database(':memory:', {
+            forests: ForestSchema,
+            trees: TreeSchema,
+        }, {
+            relations: { trees: { forest_id: 'forests' } },
+            reactive: false,
+        });
+
+        // CRUD still works
+        const f = nonReactiveDb.forests.insert({ name: 'Test', address: 'X' });
+        expect(f.name).toBe('Test');
+        expect(nonReactiveDb.forests.select().count()).toBe(1);
+
+        // on() throws
+        expect(() => {
+            nonReactiveDb.forests.on('insert', () => { });
+        }).toThrow(/Change listeners are disabled/);
+    });
+});
 // =============================================================================
 // 12. INDEPENDENT CONFIG-BASED DB (authors/books)
 // =============================================================================

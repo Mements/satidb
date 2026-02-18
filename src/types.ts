@@ -33,8 +33,15 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
     /**
      * Global polling interval (ms) for `.on()` change listeners.
      * A single poller serves all listeners. Default: 100ms.
+     * Ignored if `reactive` is false.
      */
     pollInterval?: number;
+    /**
+     * Enable trigger-based change tracking for `.on()` listeners.
+     * Set to `false` to skip trigger/table creation entirely — calling
+     * `.on()` will throw. Default: `true`.
+     */
+    reactive?: boolean;
 };
 
 export type Relationship = {
