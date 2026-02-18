@@ -59,10 +59,10 @@ class _Database<Schemas extends SchemaMap> {
                 upsert: (conditions, data) => this.upsert(entityName, data, conditions),
                 delete: (id) => this.delete(entityName, id),
                 select: (...cols: string[]) => this._createQueryBuilder(entityName, cols),
-                on: (event: string, callback: (row: any) => void | Promise<void>, options?: { interval?: number }) => {
+                on: (event: string, callback: (...args: any[]) => void | Promise<void>, options?: { interval?: number }) => {
                     if (event === 'insert') return this._createOnStream(entityName, callback, options?.interval);
-                    if (event === 'change') return this._createChangeStream(entityName, callback, options?.interval);
-                    throw new Error(`Unknown event type: '${event}'. Supported: 'insert', 'change'`);
+                    if (event === 'update' || event === 'delete') return this._createChangeStream(entityName, event, callback, options?.interval);
+                    throw new Error(`Unknown event type: '${event}'. Supported: 'insert', 'update', 'delete'`);
                 },
                 _tableName: entityName,
             };
@@ -205,14 +205,18 @@ class _Database<Schemas extends SchemaMap> {
     }
 
     /**
-     * Stream all mutations (insert / update / delete) as ChangeEvent objects.
+     * Stream specific mutations (update or delete) with natural callback signatures.
      *
      * Maintains a full snapshot and diffs on each poll.
-     * Heavier than _createOnStream (which only tracks watermark), but catches all changes.
+     * Only fires for the subscribed event type.
+     *
+     * - 'update': callback(row, oldRow)
+     * - 'delete': callback(row)
      */
     public _createChangeStream(
         entityName: string,
-        callback: (event: any) => void | Promise<void>,
+        eventType: 'update' | 'delete',
+        callback: (...args: any[]) => void | Promise<void>,
         intervalOverride?: number,
     ): () => void {
         const interval = intervalOverride ?? this.pollInterval;
@@ -244,39 +248,33 @@ class _Database<Schemas extends SchemaMap> {
                     currentEntities.set(row.id, row);
                 }
 
-                // Detect inserts and updates
-                for (const [id, json] of currentMap) {
-                    if (stopped) return;
-                    if (!snapshot.has(id)) {
-                        // INSERT
-                        const entity = this._attachMethods(
-                            entityName,
-                            transformFromStorage(currentEntities.get(id), this.schemas[entityName]!)
-                        );
-                        await callback({ type: 'insert', row: entity });
-                    } else if (snapshot.get(id) !== json) {
-                        // UPDATE
-                        const entity = this._attachMethods(
-                            entityName,
-                            transformFromStorage(currentEntities.get(id), this.schemas[entityName]!)
-                        );
-                        const oldEntity = this._attachMethods(
-                            entityName,
-                            transformFromStorage(snapshotEntities.get(id), this.schemas[entityName]!)
-                        );
-                        await callback({ type: 'update', row: entity, oldRow: oldEntity });
+                if (eventType === 'update') {
+                    // Detect updates: existing rows whose JSON changed
+                    for (const [id, json] of currentMap) {
+                        if (stopped) return;
+                        if (snapshot.has(id) && snapshot.get(id) !== json) {
+                            const entity = this._attachMethods(
+                                entityName,
+                                transformFromStorage(currentEntities.get(id), this.schemas[entityName]!)
+                            );
+                            const oldEntity = this._attachMethods(
+                                entityName,
+                                transformFromStorage(snapshotEntities.get(id), this.schemas[entityName]!)
+                            );
+                            await callback(entity, oldEntity);
+                        }
                     }
-                }
-
-                // Detect deletes
-                for (const [id] of snapshot) {
-                    if (stopped) return;
-                    if (!currentMap.has(id)) {
-                        const oldEntity = this._attachMethods(
-                            entityName,
-                            transformFromStorage(snapshotEntities.get(id), this.schemas[entityName]!)
-                        );
-                        await callback({ type: 'delete', row: oldEntity, oldRow: oldEntity });
+                } else if (eventType === 'delete') {
+                    // Detect deletes: rows in snapshot but not in current
+                    for (const [id] of snapshot) {
+                        if (stopped) return;
+                        if (!currentMap.has(id)) {
+                            const oldEntity = this._attachMethods(
+                                entityName,
+                                transformFromStorage(snapshotEntities.get(id), this.schemas[entityName]!)
+                            );
+                            await callback(oldEntity);
+                        }
                     }
                 }
 

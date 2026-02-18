@@ -45,12 +45,6 @@ export type Relationship = {
     foreignKey: string;
 };
 
-/** Change event emitted by .on('change', callback) */
-export type ChangeEvent<T = any> = {
-    type: 'insert' | 'update' | 'delete';
-    row: T;
-    oldRow?: T;   // present on 'update' and 'delete'
-};
 
 // =============================================================================
 // Type Helpers
@@ -158,15 +152,17 @@ export type NavEntityAccessor<
     /**
      * Listen for table events.
      *
-     * `'insert'` — streams new rows one at a time, in insertion order.
-     * `'change'` — streams all mutations: { type: 'insert'|'update'|'delete', row, oldRow? }.
+     * `'insert'` — streams new rows, one at a time.
+     * `'update'` — fires on row changes with (newRow, oldRow).
+     * `'delete'` — fires when a row is removed.
      *
      * Callbacks are awaited — strict ordering guaranteed even with async handlers.
      * @returns Unsubscribe function.
      */
     on: {
         (event: 'insert', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
-        (event: 'change', callback: (event: ChangeEvent<NavEntity<S, R, Table>>) => void | Promise<void>, options?: { interval?: number }): () => void;
+        (event: 'update', callback: (row: NavEntity<S, R, Table>, oldRow: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
+        (event: 'delete', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
     };
     _tableName: string;
     readonly _schema?: S[Table & keyof S];
@@ -196,15 +192,17 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     /**
      * Listen for table events.
      *
-     * `'insert'` — streams new rows one at a time, in insertion order.
-     * `'change'` — streams all mutations: { type: 'insert'|'update'|'delete', row, oldRow? }.
+     * `'insert'` — streams new rows, one at a time.
+     * `'update'` — fires on row changes with (newRow, oldRow).
+     * `'delete'` — fires when a row is removed.
      *
      * Callbacks are awaited — strict ordering guaranteed even with async handlers.
      * @returns Unsubscribe function.
      */
     on: {
         (event: 'insert', callback: (row: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
-        (event: 'change', callback: (event: ChangeEvent<AugmentedEntity<S>>) => void | Promise<void>, options?: { interval?: number }): () => void;
+        (event: 'update', callback: (row: AugmentedEntity<S>, oldRow: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
+        (event: 'delete', callback: (row: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
     };
     _tableName: string;
     readonly _schema?: S;
