@@ -6,7 +6,7 @@
  */
 import type { AugmentedEntity, Relationship } from './types';
 import { getStorableFields, transformForStorage } from './schema';
-import type { DatabaseContext } from './db-context';
+import type { DatabaseContext } from './context';
 import { getById, findMany, update, deleteEntity } from './crud';
 
 /**

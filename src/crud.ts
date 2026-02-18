@@ -7,7 +7,7 @@
 import type { AugmentedEntity, UpdateBuilder } from './types';
 import { asZodObject } from './types';
 import { transformForStorage, transformFromStorage } from './schema';
-import type { DatabaseContext } from './db-context';
+import type { DatabaseContext } from './context';
 
 // ---------------------------------------------------------------------------
 // Read helpers

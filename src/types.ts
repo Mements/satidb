@@ -5,7 +5,7 @@
  * at the type level — full autocomplete on schema fields AND relationship methods.
  */
 import { z } from 'zod';
-import type { QueryBuilder } from './query-builder';
+import type { QueryBuilder } from './query';
 
 export type ZodType = z.ZodTypeAny;
 export type SchemaMap = Record<string, z.ZodType<any>>;
@@ -186,7 +186,7 @@ export type TypedAccessors<T extends SchemaMap> = {
 // Proxy query column types
 // =============================================================================
 
-import type { ColumnNode } from './proxy-query';
+import type { ColumnNode } from './query';
 
 export type ColumnRef = ColumnNode & string;
 

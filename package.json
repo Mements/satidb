@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "bun run ./src/build.ts",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun --format esm",
     "test": "bun test",
     "prepublishOnly": "bun run build"
   },

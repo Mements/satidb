@@ -15,8 +15,7 @@ export type {
 
 export { z } from 'zod';
 
-export { QueryBuilder } from './query-builder';
-export { ColumnNode, type ProxyQueryResult } from './proxy-query';
+export { QueryBuilder, ColumnNode, compileIQO, type ProxyQueryResult } from './query';
 export {
     type ASTNode, type WhereCallback, type SetCallback,
     type TypedColumnProxy, type FunctionProxy, type Operators,

@@ -6,7 +6,7 @@
  */
 
 import { test, expect } from 'bun:test';
-import { compileIQO, QueryBuilder } from '../src/query-builder';
+import { compileIQO, QueryBuilder } from '../src/query';
 
 // ── compileIQO ──────────────────────────────────────────────
 

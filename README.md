@@ -41,7 +41,7 @@ const db = new Database(':memory:', {
   relations: {
     books: { author_id: 'authors' },
   },
-  pollInterval: 300, // global default for .on() and .subscribe() (default: 500ms)
+  pollInterval: 300, // global default for .subscribe() and .each() (default: 500ms)
 });
 ```
 
@@ -195,6 +195,35 @@ db.users.insert({ name: '', email: 'bad', age: -1 });  // throws ZodError
 
 ---
 
+## Automatic Migrations
+
+When you add new fields to your Zod schema, the ORM automatically adds the corresponding columns to the SQLite table on startup. No migration files, no manual ALTER TABLE statements.
+
+```typescript
+// v1: initial schema
+const UserSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+});
+
+// v2: added a new field — just update the Zod schema
+const UserSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+  bio: z.string().default(''),      // ← new column added automatically
+  score: z.number().default(0),     // ← new column added automatically
+});
+```
+
+**How it works:**
+1. On startup, the ORM reads `PRAGMA table_info(...)` to get existing columns
+2. Compares them against the Zod schema fields
+3. Any missing columns are added via `ALTER TABLE ... ADD COLUMN`
+
+This handles the common case of additive schema evolution. For destructive changes (renaming or dropping columns), use the SQLite CLI directly.
+
+---
+
 ## Indexes
 
 ```typescript
@@ -214,17 +243,17 @@ Two complementary APIs for watching data changes:
 
 | API | Receives | Fires on | Use case |
 |---|---|---|---|
-| **`db.table.on(cb)`** | One row at a time, in order | New inserts only | Message streams, event queues |
+| **`select().each(cb)`** | One row at a time, in order | New inserts only | Message streams, event queues |
 | **`select().subscribe(cb)`** | Full result snapshot | Any change (insert/update/delete) | Live dashboards, filtered views |
 
 ---
 
-### Row Stream — `db.table.on(callback)`
+### Row Stream — `select().each(callback)`
 
 Streams new rows one at a time, in insertion order. Only emits rows created **after** subscription starts.
 
 ```typescript
-const unsub = db.messages.on((msg) => {
+const unsub = db.messages.select().each((msg) => {
   console.log(`${msg.author}: ${msg.text}`);
 }, { interval: 200 });
 
@@ -265,13 +294,8 @@ unsub();
 ┌──────────────────────────────────────────────────┐
 │  Every {interval}ms:                             │
 │                                                  │
-│  1. Check revision (in-memory + data_version)    │
-│  2. Run: SELECT COUNT(*), MAX(id)                │
-│     FROM users WHERE role = 'admin'              │
-│                                                  │
-│  3. Combine into fingerprint: "count:max:rev:dv" │
-│                                                  │
-│  4. If fingerprint changed → re-run full query   │
+│  1. Check revision (in-memory + trigger seq)     │
+│  2. If revision changed → re-run full query      │
 │     and call your callback                       │
 └──────────────────────────────────────────────────┘
 ```
@@ -281,7 +305,7 @@ Two signals combine to detect **all** changes from **any** source:
 | Signal | Catches | How |
 |---|---|---|
 | **In-memory revision** | Same-process writes | Bumped by CRUD methods |
-| **PRAGMA data_version** | Cross-process writes | SQLite bumps it on external commits |
+| **Trigger-based seq** | Cross-process writes | INSERT/UPDATE/DELETE triggers on each table bump a counter in `_satidb_changes` |
 
 | Operation | Detected | Source |
 |---|---|---|
@@ -289,7 +313,7 @@ Two signals combine to detect **all** changes from **any** source:
 | DELETE | ✅ | Same or other process |
 | UPDATE | ✅ | Same or other process |
 
-No triggers. No `_changes` table. Zero disk overhead. WAL mode is enabled by default for concurrent read/write.
+No polling of `PRAGMA data_version`. Trigger-based change tracking per table means zero false positives from unrelated tables. WAL mode is enabled by default for concurrent read/write.
 
 ### Multi-process example
 
@@ -317,10 +341,23 @@ Run `bun examples/messages-demo.ts` for a full working demo.
 
 ---
 
+## Transactions
+
+```typescript
+const result = db.transaction(() => {
+  const author = db.authors.insert({ name: 'New Author', country: 'US' });
+  const book = db.books.insert({ title: 'New Book', year: 2024, author_id: author.id });
+  return { author, book };
+});
+// Automatically rolls back on error
+```
+
+---
+
 ## Examples & Tests
 
 ```bash
-bun examples/messages-demo.ts  # .on() vs .subscribe() demo
+bun examples/messages-demo.ts  # .each() vs .subscribe() demo
 bun examples/example.ts        # comprehensive demo
 bun test                        # 100 tests
 ```
@@ -351,8 +388,10 @@ bun test                        # 100 tests
 | `entity.update(data)` | Update entity in-place |
 | `entity.delete()` | Delete entity |
 | **Reactivity** | |
-| `db.table.on(cb, opts?)` | Stream new rows one at a time, in order |
+| `select().each(cb, opts?)` | Stream new rows one at a time, in order |
 | `select().subscribe(cb, opts?)` | Watch query result snapshot (all mutations) |
+| **Transactions** | |
+| `db.transaction(fn)` | Atomic operation with auto-rollback |
 
 ## License
 

@@ -7,8 +7,7 @@
  */
 import { Database as SqliteDatabase } from 'bun:sqlite';
 import { z } from 'zod';
-import { QueryBuilder } from './query-builder';
-import { executeProxyQuery, type ProxyQueryResult } from './proxy-query';
+import { QueryBuilder, executeProxyQuery, createQueryBuilder, type ProxyQueryResult } from './query';
 import type {
     SchemaMap, DatabaseOptions, Relationship, RelationsConfig,
     EntityAccessor, TypedAccessors, TypedNavAccessors, AugmentedEntity, UpdateBuilder,
@@ -20,14 +19,13 @@ import {
     getStorableFields,
     zodTypeToSqlType,
 } from './schema';
-import type { DatabaseContext } from './db-context';
-import { buildWhereClause } from './sql-helpers';
+import type { DatabaseContext } from './context';
+import { buildWhereClause } from './helpers';
 import { attachMethods } from './entity';
 import {
     insert, update, upsert, deleteEntity,
     getById, getOne, findMany, updateWhere, createUpdateBuilder,
 } from './crud';
-import { createQueryBuilder } from './query-factory';
 
 // =============================================================================
 // Database Class

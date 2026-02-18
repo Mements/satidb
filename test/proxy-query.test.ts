@@ -6,7 +6,7 @@
  */
 
 import { test, expect } from 'bun:test';
-import { ColumnNode, createContextProxy, compileProxyQuery } from '../src/proxy-query';
+import { ColumnNode, createContextProxy, compileProxyQuery } from '../src/query';
 
 // ── ColumnNode ──────────────────────────────────────────────
 
