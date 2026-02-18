@@ -59,8 +59,11 @@ class _Database<Schemas extends SchemaMap> {
                 upsert: (conditions, data) => this.upsert(entityName, data, conditions),
                 delete: (id) => this.delete(entityName, id),
                 select: (...cols: string[]) => this._createQueryBuilder(entityName, cols),
-                on: (callback: (row: any) => void | Promise<void>, options?: { interval?: number }) =>
-                    this._createOnStream(entityName, callback, options?.interval),
+                on: (event: string, callback: (row: any) => void | Promise<void>, options?: { interval?: number }) => {
+                    if (event === 'insert') return this._createOnStream(entityName, callback, options?.interval);
+                    if (event === 'change') return this._createChangeStream(entityName, callback, options?.interval);
+                    throw new Error(`Unknown event type: '${event}'. Supported: 'insert', 'change'`);
+                },
                 _tableName: entityName,
             };
             (this as any)[key] = accessor;
@@ -196,6 +199,94 @@ class _Database<Schemas extends SchemaMap> {
         };
 
         // Start the loop
+        setTimeout(poll, interval);
+
+        return () => { stopped = true; };
+    }
+
+    /**
+     * Stream all mutations (insert / update / delete) as ChangeEvent objects.
+     *
+     * Maintains a full snapshot and diffs on each poll.
+     * Heavier than _createOnStream (which only tracks watermark), but catches all changes.
+     */
+    public _createChangeStream(
+        entityName: string,
+        callback: (event: any) => void | Promise<void>,
+        intervalOverride?: number,
+    ): () => void {
+        const interval = intervalOverride ?? this.pollInterval;
+
+        // Build initial snapshot: Map<id, serialized row>
+        const allRows = this.db.query(`SELECT * FROM "${entityName}" ORDER BY id ASC`).all() as any[];
+        let snapshot = new Map<number, string>();
+        let snapshotEntities = new Map<number, any>();
+        for (const row of allRows) {
+            snapshot.set(row.id, JSON.stringify(row));
+            snapshotEntities.set(row.id, row);
+        }
+
+        let lastRevision: string = this._getRevision(entityName);
+        let stopped = false;
+
+        const poll = async () => {
+            if (stopped) return;
+
+            const currentRevision = this._getRevision(entityName);
+            if (currentRevision !== lastRevision) {
+                lastRevision = currentRevision;
+
+                const currentRows = this.db.query(`SELECT * FROM "${entityName}" ORDER BY id ASC`).all() as any[];
+                const currentMap = new Map<number, string>();
+                const currentEntities = new Map<number, any>();
+                for (const row of currentRows) {
+                    currentMap.set(row.id, JSON.stringify(row));
+                    currentEntities.set(row.id, row);
+                }
+
+                // Detect inserts and updates
+                for (const [id, json] of currentMap) {
+                    if (stopped) return;
+                    if (!snapshot.has(id)) {
+                        // INSERT
+                        const entity = this._attachMethods(
+                            entityName,
+                            transformFromStorage(currentEntities.get(id), this.schemas[entityName]!)
+                        );
+                        await callback({ type: 'insert', row: entity });
+                    } else if (snapshot.get(id) !== json) {
+                        // UPDATE
+                        const entity = this._attachMethods(
+                            entityName,
+                            transformFromStorage(currentEntities.get(id), this.schemas[entityName]!)
+                        );
+                        const oldEntity = this._attachMethods(
+                            entityName,
+                            transformFromStorage(snapshotEntities.get(id), this.schemas[entityName]!)
+                        );
+                        await callback({ type: 'update', row: entity, oldRow: oldEntity });
+                    }
+                }
+
+                // Detect deletes
+                for (const [id] of snapshot) {
+                    if (stopped) return;
+                    if (!currentMap.has(id)) {
+                        const oldEntity = this._attachMethods(
+                            entityName,
+                            transformFromStorage(snapshotEntities.get(id), this.schemas[entityName]!)
+                        );
+                        await callback({ type: 'delete', row: oldEntity, oldRow: oldEntity });
+                    }
+                }
+
+                snapshot = currentMap;
+                snapshotEntities = currentEntities;
+            }
+
+            if (!stopped) setTimeout(poll, interval);
+        };
+
         setTimeout(poll, interval);
 
         return () => { stopped = true; };

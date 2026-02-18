@@ -7,7 +7,7 @@ export { Database } from './database';
 export type { DatabaseType } from './database';
 
 export type {
-    SchemaMap, DatabaseOptions, Relationship,
+    SchemaMap, DatabaseOptions, Relationship, ChangeEvent,
     EntityAccessor, TypedAccessors, AugmentedEntity, UpdateBuilder,
     InferSchema, EntityData, IndexDef,
     ProxyColumns, ColumnRef,

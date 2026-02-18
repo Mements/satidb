@@ -409,7 +409,7 @@ describe('Subscribe (smart polling)', () => {
 describe('Row stream (.on)', () => {
     test('emits new inserts individually in order', async () => {
         const received: string[] = [];
-        const unsub = db.forests.on((forest) => {
+        const unsub = db.forests.on('insert', (forest) => {
             received.push(forest.name);
         }, { interval: 30 });
 
@@ -436,7 +436,7 @@ describe('Row stream (.on)', () => {
         expect(existingCount).toBeGreaterThan(0);
 
         const received: any[] = [];
-        const unsub = db.forests.on((forest) => {
+        const unsub = db.forests.on('insert', (forest) => {
             received.push(forest);
         }, { interval: 30 });
 

@@ -45,6 +45,13 @@ export type Relationship = {
     foreignKey: string;
 };
 
+/** Change event emitted by .on('change', callback) */
+export type ChangeEvent<T = any> = {
+    type: 'insert' | 'update' | 'delete';
+    row: T;
+    oldRow?: T;   // present on 'update' and 'delete'
+};
+
 // =============================================================================
 // Type Helpers
 // =============================================================================
@@ -149,12 +156,18 @@ export type NavEntityAccessor<
     delete: (id: number) => void;
     select: (...cols: (keyof z.infer<S[Table & keyof S]> & string)[]) => QueryBuilder<NavEntity<S, R, Table>>;
     /**
-     * Stream new rows one at a time, in insertion order.
-     * Only emits rows inserted AFTER subscription starts.
+     * Listen for table events.
+     *
+     * `'insert'` — streams new rows one at a time, in insertion order.
+     * `'change'` — streams all mutations: { type: 'insert'|'update'|'delete', row, oldRow? }.
+     *
      * Callbacks are awaited — strict ordering guaranteed even with async handlers.
      * @returns Unsubscribe function.
      */
-    on: (callback: (row: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }) => () => void;
+    on: {
+        (event: 'insert', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
+        (event: 'change', callback: (event: ChangeEvent<NavEntity<S, R, Table>>) => void | Promise<void>, options?: { interval?: number }): () => void;
+    };
     _tableName: string;
     readonly _schema?: S[Table & keyof S];
 };
@@ -181,12 +194,18 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     delete: (id: number) => void;
     select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
     /**
-     * Stream new rows one at a time, in insertion order.
-     * Only emits rows inserted AFTER subscription starts.
+     * Listen for table events.
+     *
+     * `'insert'` — streams new rows one at a time, in insertion order.
+     * `'change'` — streams all mutations: { type: 'insert'|'update'|'delete', row, oldRow? }.
+     *
      * Callbacks are awaited — strict ordering guaranteed even with async handlers.
      * @returns Unsubscribe function.
      */
-    on: (callback: (row: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }) => () => void;
+    on: {
+        (event: 'insert', callback: (row: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
+        (event: 'change', callback: (event: ChangeEvent<AugmentedEntity<S>>) => void | Promise<void>, options?: { interval?: number }): () => void;
+    };
     _tableName: string;
     readonly _schema?: S;
 };

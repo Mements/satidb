@@ -3,8 +3,9 @@
  *
  * Shows the two reactivity APIs working together:
  *
- *   .on(callback)          → Row stream (one row at a time, in order)
- *   .subscribe(callback)   → Snapshot (full query result on change)
+ *   .on('insert', callback)   → Row stream (one row at a time, in order)
+ *   .on('change', callback)   → Change stream ({ type, row, oldRow? })
+ *   .subscribe(callback)      → Snapshot (full query result on change)
  *
  * Writer uses a separate SQLite connection to prove cross-process detection.
  *
@@ -38,12 +39,27 @@ console.log('║   Reactivity Demo: .on() vs .subscribe()            ║');
 console.log('╚══════════════════════════════════════════════════════╝');
 console.log();
 
-// ── .on() — row stream (individual new messages) ─────────────
+// ── .on('insert') — row stream (individual new messages) ─────
 
 let onCount = 0;
-const unsubOn = db.messages.on((msg) => {
+const unsubOn = db.messages.on('insert', (msg) => {
     onCount++;
-    console.log(`  📩 .on()        → New message #${msg.id}: ${msg.author} says "${msg.text}"`);
+    console.log(`  📩 .on('insert') → New message #${msg.id}: ${msg.author} says "${msg.text}"`);
+}, { interval: 150 });
+
+// ── .on('change') — all mutations stream ─────────────────────
+
+let changeCount = 0;
+const unsubChange = db.messages.on('change', (event) => {
+    changeCount++;
+    const label = event.type.toUpperCase();
+    if (event.type === 'update') {
+        console.log(`  🔄 .on('change') → ${label} #${event.row.id}: "${event.oldRow?.text}" → "${event.row.text}"`);
+    } else if (event.type === 'delete') {
+        console.log(`  🔄 .on('change') → ${label} #${event.row.id}: removed "${event.row.text}"`);
+    } else {
+        console.log(`  🔄 .on('change') → ${label} #${event.row.id}: "${event.row.text}"`);
+    }
 }, { interval: 150 });
 
 // ── .subscribe() — snapshot (full view on any change) ────────
@@ -95,14 +111,17 @@ for (const [delay, action] of actions) {
 
 setTimeout(() => {
     unsubOn();
+    unsubChange();
     unsubSnap();
     writer.close();
     console.log('══════════════════════════════════════════════════════');
-    console.log(`✅ .on() received ${onCount} individual row events`);
-    console.log(`   .subscribe() fired ${subCount} snapshot updates`);
+    console.log(`✅ .on('insert') received ${onCount} individual row events`);
+    console.log(`   .on('change') received ${changeCount} mutation events`);
+    console.log(`   .subscribe()  fired ${subCount} snapshot updates`);
     console.log();
-    console.log('   .on()        = row stream (one new row at a time)');
-    console.log('   .subscribe() = snapshot (full result on any change)');
+    console.log(`   .on('insert') = row stream (one new row at a time)`);
+    console.log(`   .on('change') = mutation stream (insert/update/delete)`);
+    console.log('   .subscribe()  = snapshot (full result on any change)');
 
     try {
         if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
