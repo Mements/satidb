@@ -1,12 +1,9 @@
 /**
- * messages-demo.ts — Reactivity demo
+ * messages-demo.ts — Reactivity demo with clear annotations
  *
  * Two reactive primitives:
- *
- *   .subscribe(cb)  → Snapshot (full result array on any change)
- *   .each(cb)       → Row stream (one row at a time, watermark-based, O(new_rows))
- *
- * Writer uses a separate SQLite connection to prove cross-process detection.
+ *   .each(cb)       → Row stream: emits one row at a time, uses id watermark
+ *   .subscribe(cb)  → Snapshot:   emits full result array on any change
  *
  * Run:  bun examples/messages-demo.ts
  */
@@ -19,90 +16,101 @@ import { tmpdir } from 'os';
 
 const DB_PATH = join(tmpdir(), `messages-demo-${Date.now()}.db`);
 
-// ─── Schema ──────────────────────────────────────────────────
-
 const MessageSchema = z.object({
     text: z.string(),
     author: z.string(),
-    edited: z.number().default(0),
 });
 
-// ─── Watcher (ORM — only reads, never writes) ───────────────
+const db = new Database(DB_PATH, { messages: MessageSchema }, { pollInterval: 100 });
 
-const db = new Database(DB_PATH, {
-    messages: MessageSchema,
-});
+// Pre-seed 2 rows so we can prove .each() skips them
+db.messages.insert({ text: 'Old message 1', author: 'System' });
+db.messages.insert({ text: 'Old message 2', author: 'System' });
 
-console.log('╔══════════════════════════════════════════════════════╗');
-console.log('║   Reactivity Demo: .each() + .subscribe()           ║');
-console.log('╚══════════════════════════════════════════════════════╝');
+console.log('╔═══════════════════════════════════════════════════════════╗');
+console.log('║   .each() vs .subscribe() — how they differ             ║');
+console.log('╚═══════════════════════════════════════════════════════════╝');
+console.log();
+console.log(`  📦 Pre-seeded 2 rows (id=1, id=2)`);
 console.log();
 
-// ── .each() — row stream (one row at a time, watermark-based) ─
+// ── .each() — watermark-based, skips existing rows ──────────
+
+console.log('  ┌─ .each() starts ─────────────────────────────────────');
+console.log('  │  Watermark initialized to MAX(id)=2');
+console.log('  │  Will only emit rows with id > 2');
+console.log('  └──────────────────────────────────────────────────────');
 
 let eachCount = 0;
 const unsubEach = db.messages.select().each((msg) => {
     eachCount++;
-    console.log(`  📩 .each() → New #${msg.id}: ${msg.author} says "${msg.text}"`);
-}, { interval: 150 });
+    console.log(`  📩 .each()      → row #${msg.id}: "${msg.text}" by ${msg.author}  (watermark advances to ${msg.id})`);
+}, { interval: 100 });
 
-// ── .subscribe() — snapshot (full view on any change) ────────
+// ── .subscribe() — snapshot, fires immediately with current state ─
+
+console.log();
+console.log('  ┌─ .subscribe() starts ────────────────────────────────');
+console.log('  │  Fires immediately with current full result');
+console.log('  │  Then re-fires on every change (fingerprint-based)');
+console.log('  └──────────────────────────────────────────────────────');
 
 let snapCount = 0;
 const unsubSnap = db.messages.select()
     .orderBy('id', 'asc')
     .subscribe((messages) => {
         snapCount++;
-        const summary = messages.map(m => {
-            const e = m.edited ? '✏️' : '';
-            return `${m.author}:"${m.text}"${e}`;
-        }).join(', ');
-        console.log(`  📋 .subscribe() → Snapshot #${snapCount} (${messages.length} msgs): [${summary}]`);
-        console.log();
-    }, { interval: 150 });
+        const ids = messages.map(m => m.id).join(',');
+        console.log(`  📋 .subscribe() → snapshot #${snapCount}: ${messages.length} rows [ids: ${ids}]`);
+    }, { interval: 100 });
 
-// ─── Writer (separate connection) ────────────────────────────
+// ─── Writer (separate connection to prove cross-process detection) ─
 
 const writer = new RawDB(DB_PATH);
 writer.run('PRAGMA journal_mode = WAL');
 
-const actions: Array<[number, () => void]> = [
-    [500, () => {
-        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Hey everyone!', 'Alice');
-        console.log('  ✍️  [writer] Alice: "Hey everyone!"');
+console.log();
+
+const actions: Array<[number, string, () => void]> = [
+    [400, 'INSERT id=3', () => {
+        writer.run(`INSERT INTO messages (text, author) VALUES (?, ?)`, 'Hello!', 'Alice');
     }],
-    [1200, () => {
-        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Hi Alice!', 'Bob');
-        console.log('  ✍️  [writer] Bob: "Hi Alice!"');
+    [1000, 'INSERT id=4', () => {
+        writer.run(`INSERT INTO messages (text, author) VALUES (?, ?)`, 'Hi Alice!', 'Bob');
     }],
-    [1900, () => {
-        writer.run(`UPDATE messages SET text = ?, edited = 1 WHERE id = 1`, 'Hey everyone! 👋');
-        console.log('  ✍️  [writer] Alice EDITED #1 → "Hey everyone! 👋"');
+    [1600, 'UPDATE id=3', () => {
+        writer.run(`UPDATE messages SET text = ? WHERE id = 3`, 'Hello everyone!');
     }],
-    [2600, () => {
-        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Nice ORM!', 'Charlie');
-        console.log('  ✍️  [writer] Charlie: "Nice ORM!"');
+    [2200, 'DELETE id=1', () => {
+        writer.run(`DELETE FROM messages WHERE id = 1`);
     }],
-    [3300, () => {
-        writer.run(`DELETE FROM messages WHERE id = 2`);
-        console.log('  ✍️  [writer] Bob DELETED #2');
+    [2800, 'INSERT id=5', () => {
+        writer.run(`INSERT INTO messages (text, author) VALUES (?, ?)`, 'Nice!', 'Charlie');
     }],
 ];
 
-for (const [delay, action] of actions) {
-    setTimeout(action, delay);
+for (const [delay, label, action] of actions) {
+    setTimeout(() => {
+        console.log(`\n  ✍️  [writer] ${label}`);
+        action();
+    }, delay);
 }
 
 setTimeout(() => {
     unsubEach();
     unsubSnap();
     writer.close();
-    console.log('══════════════════════════════════════════════════════');
-    console.log(`✅ .each()      detected ${eachCount} new rows (watermark-based, O(new))`);
-    console.log(`   .subscribe() fired ${snapCount} snapshot updates (fingerprint-based)`);
+
+    console.log('\n══════════════════════════════════════════════════════════');
+    console.log('  Summary:');
+    console.log(`    .each()      fired ${eachCount}x (only INSERTs — ids 3, 4, 5)`);
+    console.log(`    .subscribe() fired ${snapCount}x (on ANY change — inserts, updates, deletes)`);
     console.log();
-    console.log('   .each()      = row stream, one at a time');
-    console.log('   .subscribe() = snapshot, full result array');
+    console.log('  Key differences:');
+    console.log('    .each()      → one row at a time, watermark-based, O(new_rows)');
+    console.log('    .subscribe() → full result array, fingerprint-based, O(query)');
+    console.log('    .each()      ignores updates/deletes (watermark only moves forward)');
+    console.log('    .subscribe() catches everything (snapshot changes on any mutation)');
 
     try {
         if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
@@ -110,4 +118,4 @@ setTimeout(() => {
         if (existsSync(DB_PATH + '-shm')) unlinkSync(DB_PATH + '-shm');
     } catch { }
     process.exit(0);
-}, 4500);
+}, 3800);
