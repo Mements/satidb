@@ -174,6 +174,7 @@ export class QueryBuilder<T extends Record<string, any>> {
     private conditionResolver: ((conditions: Record<string, any>) => Record<string, any>) | null;
     private revisionGetter: (() => string) | null;
     private eagerLoader: ((parentTable: string, relation: string, parentIds: number[]) => { key: string; groups: Map<number, any[]> } | null) | null;
+    private defaultPollInterval: number;
 
     constructor(
         tableName: string,
@@ -183,6 +184,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         conditionResolver?: ((conditions: Record<string, any>) => Record<string, any>) | null,
         revisionGetter?: (() => string) | null,
         eagerLoader?: ((parentTable: string, relation: string, parentIds: number[]) => { key: string; groups: Map<number, any[]> } | null) | null,
+        pollInterval?: number,
     ) {
         this.tableName = tableName;
         this.executor = executor;
@@ -191,6 +193,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         this.conditionResolver = conditionResolver ?? null;
         this.revisionGetter = revisionGetter ?? null;
         this.eagerLoader = eagerLoader ?? null;
+        this.defaultPollInterval = pollInterval ?? 500;
         this.iqo = {
             selects: [],
             wheres: [],
@@ -497,7 +500,7 @@ export class QueryBuilder<T extends Record<string, any>> {
         callback: (rows: T[]) => void,
         options: { interval?: number; immediate?: boolean } = {},
     ): () => void {
-        const { interval = 500, immediate = true } = options;
+        const { interval = this.defaultPollInterval, immediate = true } = options;
 
         // Build the fingerprint SQL (COUNT + MAX(id)) using the same WHERE
         const fingerprintSQL = this.buildFingerprintSQL();

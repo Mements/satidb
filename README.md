@@ -41,6 +41,7 @@ const db = new Database(':memory:', {
   relations: {
     books: { author_id: 'authors' },
   },
+  pollInterval: 300, // global default for .on() and .subscribe() (default: 500ms)
 });
 ```
 

@@ -30,6 +30,11 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
      * `books: { author_id: 'authors' }` → FOREIGN KEY, lazy nav, fluent join.
      */
     relations?: R;
+    /**
+     * Global polling interval (ms) for `.on()` and `.subscribe()`.
+     * Can be overridden per-call. Default: 500ms.
+     */
+    pollInterval?: number;
 };
 
 export type Relationship = {

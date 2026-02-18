@@ -29,6 +29,7 @@ class _Database<Schemas extends SchemaMap> {
     private schemas: Schemas;
     private relationships: Relationship[];
     private options: DatabaseOptions;
+    private pollInterval: number;
 
     /** In-memory revision counter per table — bumps on every write (insert/update/delete).
      *  Used by QueryBuilder.subscribe() fingerprint to detect ALL changes with zero overhead. */
@@ -40,6 +41,7 @@ class _Database<Schemas extends SchemaMap> {
         this.db.run('PRAGMA foreign_keys = ON');
         this.schemas = schemas;
         this.options = options;
+        this.pollInterval = options.pollInterval ?? 500;
         this.relationships = options.relations ? parseRelationsConfig(options.relations, schemas) : [];
         this.initializeTables();
         this.runMigrations();
@@ -57,8 +59,8 @@ class _Database<Schemas extends SchemaMap> {
                 upsert: (conditions, data) => this.upsert(entityName, data, conditions),
                 delete: (id) => this.delete(entityName, id),
                 select: (...cols: string[]) => this._createQueryBuilder(entityName, cols),
-                on: (callback: (row: any) => void, options?: { interval?: number }) =>
-                    this._createOnStream(entityName, callback, options),
+                on: (callback: (row: any) => void | Promise<void>, options?: { interval?: number }) =>
+                    this._createOnStream(entityName, callback, options?.interval),
                 _tableName: entityName,
             };
             (this as any)[key] = accessor;
@@ -152,9 +154,9 @@ class _Database<Schemas extends SchemaMap> {
     public _createOnStream(
         entityName: string,
         callback: (row: any) => void | Promise<void>,
-        options?: { interval?: number },
+        intervalOverride?: number,
     ): () => void {
-        const { interval = 500 } = options ?? {};
+        const interval = intervalOverride ?? this.pollInterval;
 
         // Initialize watermark to current max id (only emit NEW rows)
         const maxRow = this.db.query(`SELECT MAX(id) as _max FROM "${entityName}"`).get() as any;
@@ -547,7 +549,7 @@ class _Database<Schemas extends SchemaMap> {
             return null;
         };
 
-        const builder = new QueryBuilder(entityName, executor, singleExecutor, joinResolver, conditionResolver, revisionGetter, eagerLoader);
+        const builder = new QueryBuilder(entityName, executor, singleExecutor, joinResolver, conditionResolver, revisionGetter, eagerLoader, this.pollInterval);
         if (initialCols.length > 0) builder.select(...initialCols);
         return builder;
     }
