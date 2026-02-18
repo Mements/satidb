@@ -207,9 +207,37 @@ const db = new Database(':memory:', schemas, {
 
 ---
 
-## Reactivity — `select().subscribe()`
+## Reactivity
 
-One API to watch any query for changes. Detects **all** mutations (inserts, updates, deletes) with zero disk overhead.
+Two complementary APIs for watching data changes:
+
+| API | Receives | Fires on | Use case |
+|---|---|---|---|
+| **`db.table.on(cb)`** | One row at a time, in order | New inserts only | Message streams, event queues |
+| **`select().subscribe(cb)`** | Full result snapshot | Any change (insert/update/delete) | Live dashboards, filtered views |
+
+---
+
+### Row Stream — `db.table.on(callback)`
+
+Streams new rows one at a time, in insertion order. Only emits rows created **after** subscription starts.
+
+```typescript
+const unsub = db.messages.on((msg) => {
+  console.log(`${msg.author}: ${msg.text}`);
+}, { interval: 200 });
+
+// Later: stop listening
+unsub();
+```
+
+If 5 messages arrive between polls, the callback fires 5 times — once per row, in order. Uses a watermark (`id > lastSeen`) internally.
+
+---
+
+### Snapshot — `select().subscribe(callback)`
+
+Returns the **full query result** whenever data changes. Detects all mutations (inserts, updates, deletes).
 
 ```typescript
 const unsub = db.users.select()
@@ -291,8 +319,9 @@ Run `bun examples/messages-demo.ts` for a full working demo.
 ## Examples & Tests
 
 ```bash
-bun examples/example.ts    # comprehensive demo
-bun test                    # 91 tests
+bun examples/messages-demo.ts  # .on() vs .subscribe() demo
+bun examples/example.ts        # comprehensive demo
+bun test                        # 93 tests
 ```
 
 ---
@@ -319,7 +348,8 @@ bun test                    # 91 tests
 | `entity.update(data)` | Update entity in-place |
 | `entity.delete()` | Delete entity |
 | **Reactivity** | |
-| `select().subscribe(cb, opts?)` | Watch any query for changes (all mutations) |
+| `db.table.on(cb, opts?)` | Stream new rows one at a time, in order |
+| `select().subscribe(cb, opts?)` | Watch query result snapshot (all mutations) |
 
 ## License
 

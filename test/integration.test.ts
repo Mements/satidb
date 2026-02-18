@@ -402,6 +402,57 @@ describe('Subscribe (smart polling)', () => {
         unsub();
     });
 });
+// =============================================================================
+// 11b. ROW STREAM — .on()
+// =============================================================================
+
+describe('Row stream (.on)', () => {
+    test('emits new inserts individually in order', async () => {
+        const received: string[] = [];
+        const unsub = db.forests.on((forest) => {
+            received.push(forest.name);
+        }, { interval: 30 });
+
+        // Insert 3 rows
+        db.forests.insert({ name: 'OnTest1', address: 'A' });
+        db.forests.insert({ name: 'OnTest2', address: 'B' });
+        await new Promise(r => setTimeout(r, 100));
+        db.forests.insert({ name: 'OnTest3', address: 'C' });
+        await new Promise(r => setTimeout(r, 100));
+
+        unsub();
+
+        // All 3 emitted individually, in insertion order
+        expect(received).toContain('OnTest1');
+        expect(received).toContain('OnTest2');
+        expect(received).toContain('OnTest3');
+        expect(received.indexOf('OnTest1')).toBeLessThan(received.indexOf('OnTest2'));
+        expect(received.indexOf('OnTest2')).toBeLessThan(received.indexOf('OnTest3'));
+    });
+
+    test('does not emit rows that existed before subscription', async () => {
+        // These rows already exist from previous tests
+        const existingCount = db.forests.select().count();
+        expect(existingCount).toBeGreaterThan(0);
+
+        const received: any[] = [];
+        const unsub = db.forests.on((forest) => {
+            received.push(forest);
+        }, { interval: 30 });
+
+        // Wait — no new inserts
+        await new Promise(r => setTimeout(r, 100));
+        expect(received.length).toBe(0);
+
+        // Now insert one
+        db.forests.insert({ name: 'OnTestNew', address: 'New' });
+        await new Promise(r => setTimeout(r, 100));
+        expect(received.length).toBe(1);
+        expect(received[0].name).toBe('OnTestNew');
+
+        unsub();
+    });
+});
 
 // =============================================================================
 // 12. INDEPENDENT CONFIG-BASED DB (authors/books)

@@ -143,6 +143,12 @@ export type NavEntityAccessor<
     upsert: (conditions?: Partial<z.infer<S[Table & keyof S]>>, data?: Partial<z.infer<S[Table & keyof S]>>) => NavEntity<S, R, Table>;
     delete: (id: number) => void;
     select: (...cols: (keyof z.infer<S[Table & keyof S]> & string)[]) => QueryBuilder<NavEntity<S, R, Table>>;
+    /**
+     * Stream new rows one at a time, in insertion order.
+     * Only emits rows inserted AFTER subscription starts.
+     * @returns Unsubscribe function.
+     */
+    on: (callback: (row: NavEntity<S, R, Table>) => void, options?: { interval?: number }) => () => void;
     _tableName: string;
     readonly _schema?: S[Table & keyof S];
 };
@@ -168,6 +174,12 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
     delete: (id: number) => void;
     select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
+    /**
+     * Stream new rows one at a time, in insertion order.
+     * Only emits rows inserted AFTER subscription starts.
+     * @returns Unsubscribe function.
+     */
+    on: (callback: (row: AugmentedEntity<S>) => void, options?: { interval?: number }) => () => void;
     _tableName: string;
     readonly _schema?: S;
 };

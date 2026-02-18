@@ -1,13 +1,12 @@
 /**
- * messages-demo.ts — Multi-process messaging demo
+ * messages-demo.ts — Reactivity demo: .on() vs .subscribe()
  *
- * Demonstrates that select().subscribe() detects changes from ANOTHER process:
+ * Shows the two reactivity APIs working together:
  *
- *  Process A (this file):  Watches messages with .subscribe()
- *  Process B (writer):     Inserts, edits, and deletes messages via raw SQL
+ *   .on(callback)          → Row stream (one row at a time, in order)
+ *   .subscribe(callback)   → Snapshot (full query result on change)
  *
- * The watcher never calls insert/update/delete — it only reads.
- * Yet it detects all changes via PRAGMA data_version.
+ * Writer uses a separate SQLite connection to prove cross-process detection.
  *
  * Run:  bun examples/messages-demo.ts
  */
@@ -28,72 +27,65 @@ const MessageSchema = z.object({
     edited: z.number().default(0),
 });
 
-// ─── Watcher (ORM connection — only reads, never writes) ─────
+// ─── Watcher (ORM — only reads, never writes) ───────────────
 
 const db = new Database(DB_PATH, {
     messages: MessageSchema,
 });
 
 console.log('╔══════════════════════════════════════════════════════╗');
-console.log('║   Multi-Process Messaging Demo                      ║');
-console.log('║                                                     ║');
-console.log('║   Watcher:  ORM connection with select().subscribe  ║');
-console.log('║   Writer:   Separate SQLite connection (raw SQL)    ║');
+console.log('║   Reactivity Demo: .on() vs .subscribe()            ║');
 console.log('╚══════════════════════════════════════════════════════╝');
 console.log();
 
-let updateCount = 0;
+// ── .on() — row stream (individual new messages) ─────────────
 
-const unsub = db.messages.select()
+let onCount = 0;
+const unsubOn = db.messages.on((msg) => {
+    onCount++;
+    console.log(`  📩 .on()        → New message #${msg.id}: ${msg.author} says "${msg.text}"`);
+}, { interval: 150 });
+
+// ── .subscribe() — snapshot (full view on any change) ────────
+
+let subCount = 0;
+const unsubSnap = db.messages.select()
     .orderBy('id', 'asc')
     .subscribe((messages) => {
-        updateCount++;
-        const ts = new Date().toLocaleTimeString();
-        console.log(`  [watcher] Change #${updateCount} detected — ${messages.length} message(s):`);
-        for (const msg of messages) {
-            const editTag = msg.edited ? ' ✏️' : '';
-            console.log(`            #${msg.id}  ${msg.author}: "${msg.text}"${editTag}`);
-        }
+        subCount++;
+        const summary = messages.map(m => {
+            const e = m.edited ? '✏️' : '';
+            return `${m.author}:"${m.text}"${e}`;
+        }).join(', ');
+        console.log(`  📋 .subscribe() → Snapshot #${subCount} (${messages.length} msgs): [${summary}]`);
         console.log();
     }, { interval: 150 });
 
-// ─── Writer (separate connection — simulates another process) ─
+// ─── Writer (separate connection) ────────────────────────────
 
 const writer = new RawDB(DB_PATH);
 writer.run('PRAGMA journal_mode = WAL');
 
 const actions: Array<[number, () => void]> = [
-    [600, () => {
+    [500, () => {
         writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Hey everyone!', 'Alice');
-        console.log('  [writer]  Alice sent: "Hey everyone!"');
+        console.log('  ✍️  [writer] Alice: "Hey everyone!"');
     }],
     [1200, () => {
         writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Hi Alice!', 'Bob');
-        console.log('  [writer]  Bob sent: "Hi Alice!"');
+        console.log('  ✍️  [writer] Bob: "Hi Alice!"');
     }],
-    [1800, () => {
-        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'What are you working on?', 'Alice');
-        console.log('  [writer]  Alice sent: "What are you working on?"');
-    }],
-    [2400, () => {
+    [1900, () => {
         writer.run(`UPDATE messages SET text = ?, edited = 1 WHERE id = 1`, 'Hey everyone! 👋');
-        console.log('  [writer]  Alice EDITED msg #1 → "Hey everyone! 👋"');
+        console.log('  ✍️  [writer] Alice EDITED #1 → "Hey everyone! 👋"');
     }],
-    [3000, () => {
-        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Building a real-time chat ORM!', 'Bob');
-        console.log('  [writer]  Bob sent: "Building a real-time chat ORM!"');
+    [2600, () => {
+        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'Nice ORM!', 'Charlie');
+        console.log('  ✍️  [writer] Charlie: "Nice ORM!"');
     }],
-    [3600, () => {
-        writer.run(`UPDATE messages SET text = ?, edited = 1 WHERE id = 2`, 'Hi Alice! How are you?');
-        console.log('  [writer]  Bob EDITED msg #2 → "Hi Alice! How are you?"');
-    }],
-    [4200, () => {
-        writer.run(`DELETE FROM messages WHERE id = 3`);
-        console.log('  [writer]  Alice DELETED msg #3');
-    }],
-    [4800, () => {
-        writer.run(`INSERT INTO messages (text, author, edited) VALUES (?, ?, 0)`, 'That sounds amazing!', 'Charlie');
-        console.log('  [writer]  Charlie sent: "That sounds amazing!"');
+    [3300, () => {
+        writer.run(`DELETE FROM messages WHERE id = 2`);
+        console.log('  ✍️  [writer] Bob DELETED #2');
     }],
 ];
 
@@ -101,14 +93,16 @@ for (const [delay, action] of actions) {
     setTimeout(action, delay);
 }
 
-// Finish
 setTimeout(() => {
-    unsub();
+    unsubOn();
+    unsubSnap();
     writer.close();
     console.log('══════════════════════════════════════════════════════');
-    console.log(`✅ Demo complete — watcher detected ${updateCount} change events`);
-    console.log('   across INSERT, UPDATE, and DELETE from another connection.');
-    console.log('   No triggers. No _changes table. Just PRAGMA data_version.');
+    console.log(`✅ .on() received ${onCount} individual row events`);
+    console.log(`   .subscribe() fired ${subCount} snapshot updates`);
+    console.log();
+    console.log('   .on()        = row stream (one new row at a time)');
+    console.log('   .subscribe() = snapshot (full result on any change)');
 
     try {
         if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
@@ -116,4 +110,4 @@ setTimeout(() => {
         if (existsSync(DB_PATH + '-shm')) unlinkSync(DB_PATH + '-shm');
     } catch { }
     process.exit(0);
-}, 5800);
+}, 4500);

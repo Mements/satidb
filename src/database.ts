@@ -57,6 +57,8 @@ class _Database<Schemas extends SchemaMap> {
                 upsert: (conditions, data) => this.upsert(entityName, data, conditions),
                 delete: (id) => this.delete(entityName, id),
                 select: (...cols: string[]) => this._createQueryBuilder(entityName, cols),
+                on: (callback: (row: any) => void, options?: { interval?: number }) =>
+                    this._createOnStream(entityName, callback, options),
                 _tableName: entityName,
             };
             (this as any)[key] = accessor;
@@ -135,6 +137,53 @@ class _Database<Schemas extends SchemaMap> {
         const rev = this._revisions[entityName] ?? 0;
         const dataVersion = (this.db.query('PRAGMA data_version').get() as any)?.data_version ?? 0;
         return `${rev}:${dataVersion}`;
+    }
+
+    // ===========================================================================
+    // Row Stream — .on(callback)
+    // ===========================================================================
+
+    /**
+     * Stream new rows one at a time, in insertion order.
+     *
+     * Uses a watermark (last seen id) to query only `WHERE id > ?`.
+     * Checks revision + data_version first to avoid unnecessary queries.
+     */
+    public _createOnStream(
+        entityName: string,
+        callback: (row: any) => void,
+        options?: { interval?: number },
+    ): () => void {
+        const { interval = 500 } = options ?? {};
+
+        // Initialize watermark to current max id (only emit NEW rows)
+        const maxRow = this.db.query(`SELECT MAX(id) as _max FROM "${entityName}"`).get() as any;
+        let lastMaxId: number = maxRow?._max ?? 0;
+        let lastRevision: string = this._getRevision(entityName);
+
+        const timer = setInterval(() => {
+            // Fast check: did anything change?
+            const currentRevision = this._getRevision(entityName);
+            if (currentRevision === lastRevision) return;
+            lastRevision = currentRevision;
+
+            // Fetch new rows since watermark
+            const newRows = this.db.query(
+                `SELECT * FROM "${entityName}" WHERE id > ? ORDER BY id ASC`
+            ).all(lastMaxId) as any[];
+
+            for (const rawRow of newRows) {
+                // Hydrate with entity methods and schema transforms
+                const entity = this._attachMethods(
+                    entityName,
+                    transformFromStorage(rawRow, this.schemas[entityName]!)
+                );
+                callback(entity);
+                lastMaxId = rawRow.id;
+            }
+        }, interval);
+
+        return () => clearInterval(timer);
     }
 
     // ===========================================================================
