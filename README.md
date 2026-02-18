@@ -308,8 +308,68 @@ const result = db.transaction(() => {
 ```bash
 bun examples/messages-demo.ts  # on() change listener demo
 bun examples/example.ts        # comprehensive demo
-bun test                        # 99 tests
+bun test                        # 100 tests
 ```
+
+---
+
+## Benchmarks
+
+All benchmarks run on in-memory SQLite via Bun. Reproduce with:
+
+```bash
+bun bench/triggers-vs-naive.ts  # change detection strategies
+bun bench/poll-strategy.ts      # MAX(id) vs SELECT WHERE
+bun bench/indexes.ts            # index impact on queries
+```
+
+### Why triggers? — Change detection strategies
+
+We compared three approaches for detecting data changes:
+
+| Strategy | Idle poll cost | Write overhead | Granularity |
+|---|---|---|---|
+| **Triggers + `_changes` table** (ours) | 147ns/poll | ~1µs/mutation | row + table + operation |
+| `PRAGMA data_version` | 136ns/poll | zero | boolean only (any write?) |
+| `COUNT(*) + MAX(id)` fingerprint | 138,665ns/poll | zero | count only, misses updates |
+
+**Idle poll cost** (the common hot path — nothing changed) is near-identical for triggers and `data_version` (~150ns). The `COUNT+MAX` approach is **~1000x slower** because it must scan the table every poll.
+
+**Write overhead** for triggers is ~1µs per mutation (one extra INSERT into `_changes`):
+
+| Operation | With triggers | Without | Overhead |
+|---|---|---|---|
+| INSERT (10K rows) | 2.4µs/row | 1.4µs/row | +1.0µs |
+| UPDATE (10K rows) | 1.8µs/row | 0.9µs/row | +0.9µs |
+
+In exchange, triggers give you **row-level, operation-level, table-level** granularity — you know exactly which row changed, how, and in which table. `PRAGMA data_version` just tells you "something changed somewhere." For apps that don't need listeners, `{ reactive: false }` eliminates all trigger overhead.
+
+### Why MAX(id) fast-path?
+
+The poller checks `SELECT MAX(id) FROM _changes` before fetching rows. On idle (no changes), this avoids materializing any row objects:
+
+| Strategy | Per poll (idle) |
+|---|---|
+| `MAX(id)` check only | **153ns** |
+| `SELECT * WHERE id > ?` (returns 0 rows) | 192ns |
+
+~20% faster on the hot path with no penalty when changes exist.
+
+### Index impact
+
+Benchmarked on 100K rows, 10K queries each:
+
+| Query pattern | No index | With index | Speedup |
+|---|---|---|---|
+| Point lookup (`WHERE email = ?`) | 2,447µs | **2.2µs** | **1,112x** |
+| Top-N (`ORDER BY score DESC LIMIT 10`) | 2,777µs | **7.1µs** | **391x** |
+| COUNT with filter | 2,526µs | **344µs** | **7x** |
+| Range scan (`WHERE score > ? LIMIT 100`) | 54µs | 75µs | 0.7x* |
+| Category filter (`WHERE role = ?`, ~20K rows) | 11,084µs | 14,809µs | 0.7x* |
+
+*\*Range scans and wide category filters can be slightly slower with indexes due to random I/O — SQLite's full scan is faster when returning a large fraction of the table.*
+
+**Write overhead:** 4 indexes add ~2.8x to INSERT cost (1.9µs → 5.3µs per insert). This is typical and a good tradeoff for read-heavy workloads.
 
 ---
 
@@ -340,9 +400,13 @@ bun test                        # 99 tests
 | `db.table.on('insert', cb)` | Listen for new rows (receives full row) |
 | `db.table.on('update', cb)` | Listen for updated rows (receives full row) |
 | `db.table.on('delete', cb)` | Listen for deleted rows (receives `{ id }`) |
+| **Options** | |
+| `{ reactive: false }` | Disable triggers entirely (no .on() support) |
+| `{ pollInterval: 100 }` | Global poller interval in ms (default: 100) |
 | **Transactions** | |
 | `db.transaction(fn)` | Atomic operation with auto-rollback |
 
 ## License
 
 MIT
+
