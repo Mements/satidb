@@ -1,12 +1,10 @@
 /**
- * messages-demo.ts — Reactivity demo: .on() vs .subscribe()
+ * messages-demo.ts — Reactivity demo: .subscribe()
  *
- * Shows the two reactivity APIs working together:
+ * .subscribe() is the single reactive primitive. Two patterns:
  *
- *   .on('insert', callback)   → Row stream (one row at a time, in order)
- *   .on('update', callback)   → Row update stream (newRow, oldRow)
- *   .on('delete', callback)   → Row deletion stream (deletedRow)
- *   .subscribe(callback)      → Snapshot (full query result on change)
+ *   Snapshot:  .select().subscribe(cb)           → full result on any change
+ *   Watermark: .select().where({ id: { $gt } }) → only new rows since X
  *
  * Writer uses a separate SQLite connection to prove cross-process detection.
  *
@@ -36,46 +34,39 @@ const db = new Database(DB_PATH, {
 });
 
 console.log('╔══════════════════════════════════════════════════════╗');
-console.log('║   Reactivity Demo: .on() vs .subscribe()            ║');
+console.log('║   Reactivity Demo: .subscribe()                     ║');
 console.log('╚══════════════════════════════════════════════════════╝');
 console.log();
 
-// ── .on('insert') — row stream (individual new messages) ─────
+// ── Pattern 1: Watermark — new rows only ─────────────────────
 
-let onCount = 0;
-const unsubOn = db.messages.on('insert', (msg) => {
-    onCount++;
-    console.log(`  📩 .on('insert') → New message #${msg.id}: ${msg.author} says "${msg.text}"`);
-}, { interval: 150 });
+let watermark = 0;
+let newCount = 0;
+const unsubNew = db.messages.select()
+    .where({ id: { $gt: watermark } })
+    .orderBy('id', 'asc')
+    .subscribe((rows) => {
+        for (const row of rows) {
+            if (row.id > watermark) {
+                newCount++;
+                console.log(`  📩 [watermark] New #${row.id}: ${row.author} says "${row.text}"`);
+                watermark = row.id;
+            }
+        }
+    }, { interval: 150 });
 
-// ── .on('update') — row change stream ──────────────────────
+// ── Pattern 2: Snapshot — full view on any change ────────────
 
-let updateCount = 0;
-const unsubUpdate = db.messages.on('update', (msg, oldMsg) => {
-    updateCount++;
-    console.log(`  ✏️  .on('update') → #${msg.id}: "${oldMsg.text}" → "${msg.text}"`);
-}, { interval: 150 });
-
-// ── .on('delete') — row deletion stream ────────────────────
-
-let deleteCount = 0;
-const unsubDelete = db.messages.on('delete', (msg) => {
-    deleteCount++;
-    console.log(`  �️  .on('delete') → #${msg.id}: removed "${msg.text}"`);
-}, { interval: 150 });
-
-// ── .subscribe() — snapshot (full view on any change) ────────
-
-let subCount = 0;
+let snapCount = 0;
 const unsubSnap = db.messages.select()
     .orderBy('id', 'asc')
     .subscribe((messages) => {
-        subCount++;
+        snapCount++;
         const summary = messages.map(m => {
             const e = m.edited ? '✏️' : '';
             return `${m.author}:"${m.text}"${e}`;
         }).join(', ');
-        console.log(`  📋 .subscribe() → Snapshot #${subCount} (${messages.length} msgs): [${summary}]`);
+        console.log(`  📋 [snapshot]  #${snapCount} (${messages.length} msgs): [${summary}]`);
         console.log();
     }, { interval: 150 });
 
@@ -112,21 +103,16 @@ for (const [delay, action] of actions) {
 }
 
 setTimeout(() => {
-    unsubOn();
-    unsubUpdate();
-    unsubDelete();
+    unsubNew();
     unsubSnap();
     writer.close();
     console.log('══════════════════════════════════════════════════════');
-    console.log(`✅ .on('insert') received ${onCount} new row events`);
-    console.log(`   .on('update') received ${updateCount} row change events`);
-    console.log(`   .on('delete') received ${deleteCount} row deletion events`);
-    console.log(`   .subscribe()  fired ${subCount} snapshot updates`);
+    console.log(`✅ [watermark] detected ${newCount} new rows`);
+    console.log(`   [snapshot]  fired ${snapCount} snapshot updates`);
     console.log();
-    console.log(`   .on('insert') = new rows, one at a time`);
-    console.log(`   .on('update') = row changes with (newRow, oldRow)`);
-    console.log(`   .on('delete') = row deletions`);
-    console.log('   .subscribe()  = snapshot (full result on any change)');
+    console.log('   One primitive: .subscribe()');
+    console.log('   Watermark pattern: .where({ id: { $gt: N } }) = new rows');
+    console.log('   Snapshot pattern:  .select().subscribe()       = full view');
 
     try {
         if (existsSync(DB_PATH)) unlinkSync(DB_PATH);

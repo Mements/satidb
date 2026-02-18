@@ -149,21 +149,6 @@ export type NavEntityAccessor<
     upsert: (conditions?: Partial<z.infer<S[Table & keyof S]>>, data?: Partial<z.infer<S[Table & keyof S]>>) => NavEntity<S, R, Table>;
     delete: (id: number) => void;
     select: (...cols: (keyof z.infer<S[Table & keyof S]> & string)[]) => QueryBuilder<NavEntity<S, R, Table>>;
-    /**
-     * Listen for table events.
-     *
-     * `'insert'` — streams new rows, one at a time.
-     * `'update'` — fires on row changes with (newRow, oldRow).
-     * `'delete'` — fires when a row is removed.
-     *
-     * Callbacks are awaited — strict ordering guaranteed even with async handlers.
-     * @returns Unsubscribe function.
-     */
-    on: {
-        (event: 'insert', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
-        (event: 'update', callback: (row: NavEntity<S, R, Table>, oldRow: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
-        (event: 'delete', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>, options?: { interval?: number }): () => void;
-    };
     _tableName: string;
     readonly _schema?: S[Table & keyof S];
 };
@@ -189,21 +174,6 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
     delete: (id: number) => void;
     select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
-    /**
-     * Listen for table events.
-     *
-     * `'insert'` — streams new rows, one at a time.
-     * `'update'` — fires on row changes with (newRow, oldRow).
-     * `'delete'` — fires when a row is removed.
-     *
-     * Callbacks are awaited — strict ordering guaranteed even with async handlers.
-     * @returns Unsubscribe function.
-     */
-    on: {
-        (event: 'insert', callback: (row: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
-        (event: 'update', callback: (row: AugmentedEntity<S>, oldRow: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
-        (event: 'delete', callback: (row: AugmentedEntity<S>) => void | Promise<void>, options?: { interval?: number }): () => void;
-    };
     _tableName: string;
     readonly _schema?: S;
 };
