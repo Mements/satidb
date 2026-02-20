@@ -512,7 +512,29 @@ c.tags;            // [] — arrays too
 
 ---
 
-## 19. Schema Validation
+## 19. Select Type Narrowing
+
+Type-safe column selection — `.select('name', 'email')` narrows the return type:
+```typescript
+// Full entity (all fields)
+const users = db.users.select().all();
+users[0].name;  // ✅ string
+users[0].email; // ✅ string
+users[0].score; // ✅ number
+
+// Narrowed — only selected columns in return type
+const names = db.users.select('name', 'email').all();
+names[0].name;  // ✅ string
+names[0].email; // ✅ string
+names[0].score; // ❌ TypeScript error — not selected
+```
+
+Works with `.get()`, `.first()`, `.paginate()`, and `await`.
+`.where()` and `.orderBy()` still accept all entity fields for filtering.
+
+---
+
+## 20. Schema Validation
 
 Zod validates every insert and update:
 ```typescript
@@ -529,7 +551,7 @@ user.score; // → 0 (from z.number().int().default(0))
 
 ---
 
-## 20. Common Patterns
+## 21. Common Patterns
 
 ### Chat/message storage
 ```typescript
@@ -649,7 +671,7 @@ src/
 
 ### Tests
 ```bash
-bun test                               # 184 tests, ~1.2s
+bun test                               # 192 tests, ~1.2s
 bun test test/crud.test.ts             # just CRUD
 bun test test/fluent.test.ts           # query builder
 bun test test/relations.test.ts        # relationships

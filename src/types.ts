@@ -209,7 +209,10 @@ export type NavEntityAccessor<
     findOrCreate: (conditions: Partial<z.infer<S[Table & keyof S]>>, defaults?: Partial<z.infer<S[Table & keyof S]>>) => { entity: NavEntity<S, R, Table>; created: boolean };
     delete: ((id: number) => void) & (() => DeleteBuilder<NavEntity<S, R, Table>>);
     restore: (id: number) => void;
-    select: (...cols: (keyof z.infer<S[Table & keyof S]> & string)[]) => QueryBuilder<NavEntity<S, R, Table>>;
+    select: {
+        (): QueryBuilder<NavEntity<S, R, Table>>;
+        <K extends (keyof z.infer<S[Table & keyof S]> | 'id') & string>(...cols: K[]): QueryBuilder<NavEntity<S, R, Table>, Pick<NavEntity<S, R, Table>, K>>;
+    };
     on: ((event: 'insert' | 'update', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>) => () => void) &
     ((event: 'delete', callback: (row: { id: number }) => void | Promise<void>) => () => void);
     _tableName: string;
@@ -243,7 +246,10 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     delete: ((id: number) => void) & (() => DeleteBuilder<AugmentedEntity<S>>);
     /** Undo a soft delete by setting deletedAt = null. Requires softDeletes. */
     restore: (id: number) => void;
-    select: (...cols: (keyof InferSchema<S> & string)[]) => QueryBuilder<AugmentedEntity<S>>;
+    select: {
+        (): QueryBuilder<AugmentedEntity<S>>;
+        <K extends (keyof InferSchema<S> | 'id') & string>(...cols: K[]): QueryBuilder<AugmentedEntity<S>, Pick<AugmentedEntity<S>, K>>;
+    };
     on: ((event: 'insert' | 'update', callback: (row: AugmentedEntity<S>) => void | Promise<void>) => () => void) &
     ((event: 'delete', callback: (row: { id: number }) => void | Promise<void>) => () => void);
     _tableName: string;

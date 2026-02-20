@@ -27,7 +27,7 @@ import {
  * - Object-style: `.where({ name: 'Alice', age: { $gt: 18 } })`
  * - Callback-style (AST): `.where((c, f, op) => op.and(op.eq(c.name, 'Alice'), op.gt(c.age, 18)))`
  */
-export class QueryBuilder<T extends Record<string, any>> {
+export class QueryBuilder<T extends Record<string, any>, TResult extends Record<string, any> = T> {
     private iqo: IQO;
     private tableName: string;
     private executor: (sql: string, params: any[], raw: boolean) => any[];
@@ -69,7 +69,9 @@ export class QueryBuilder<T extends Record<string, any>> {
     }
 
     /** Specify which columns to select. If called with no arguments, defaults to `*`. */
-    select(...cols: (keyof T & string)[]): this {
+    select(): this;
+    select<K extends keyof T & string>(...cols: K[]): QueryBuilder<T, Pick<T, K>>;
+    select(...cols: string[]): any {
         this.iqo.selects.push(...cols);
         return this;
     }
@@ -264,20 +266,20 @@ export class QueryBuilder<T extends Record<string, any>> {
     // ---------- Terminal / Execution Methods ----------
 
     /** Execute the query and return all matching rows. */
-    all(): T[] {
+    all(): TResult[] {
         const { sql, params } = compileIQO(this.tableName, this.iqo);
         const results = this.executor(sql, params, this.iqo.raw);
-        return this._applyEagerLoads(results);
+        return this._applyEagerLoads(results) as unknown as TResult[];
     }
 
     /** Execute the query and return the first matching row, or null. */
-    get(): T | null {
+    get(): TResult | null {
         this.iqo.limit = 1;
         const { sql, params } = compileIQO(this.tableName, this.iqo);
         const result = this.singleExecutor(sql, params, this.iqo.raw);
         if (!result) return null;
         const [loaded] = this._applyEagerLoads([result]);
-        return loaded ?? null;
+        return (loaded ?? null) as TResult | null;
     }
 
     /** Execute the query and return the count of matching rows. */
@@ -291,7 +293,7 @@ export class QueryBuilder<T extends Record<string, any>> {
     }
 
     /** Alias for get() — returns the first matching row or null. */
-    first(): T | null {
+    first(): TResult | null {
         return this.get();
     }
 
@@ -399,7 +401,7 @@ export class QueryBuilder<T extends Record<string, any>> {
     }
 
     /** Paginate results. Returns { data, total, page, perPage, pages }. */
-    paginate(page: number = 1, perPage: number = 20): { data: T[]; total: number; page: number; perPage: number; pages: number } {
+    paginate(page: number = 1, perPage: number = 20): { data: TResult[]; total: number; page: number; perPage: number; pages: number } {
         const total = this.count();
         const pages = Math.ceil(total / perPage);
         this.iqo.limit = perPage;
@@ -434,10 +436,10 @@ export class QueryBuilder<T extends Record<string, any>> {
 
     // ---------- Thenable (async/await support) ----------
 
-    then<TResult1 = T[], TResult2 = never>(
-        onfulfilled?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | null,
-        onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
-    ): Promise<TResult1 | TResult2> {
+    then<TThen1 = TResult[], TThen2 = never>(
+        onfulfilled?: ((value: TResult[]) => TThen1 | PromiseLike<TThen1>) | null,
+        onrejected?: ((reason: any) => TThen2 | PromiseLike<TThen2>) | null,
+    ): Promise<TThen1 | TThen2> {
         try {
             const result = this.all();
             return Promise.resolve(result).then(onfulfilled, onrejected);
