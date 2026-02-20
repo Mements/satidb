@@ -5,7 +5,7 @@
  * can access the Database's internals without importing the full class.
  */
 import type { Database as SqliteDatabase } from 'bun:sqlite';
-import type { SchemaMap, Relationship, AugmentedEntity } from './types';
+import type { SchemaMap, Relationship, AugmentedEntity, TableHooks } from './types';
 
 export interface DatabaseContext {
     /** The raw bun:sqlite Database handle. */
@@ -31,4 +31,7 @@ export interface DatabaseContext {
 
     /** Whether soft deletes are enabled (deletedAt column). */
     softDeletes: boolean;
+
+    /** Lifecycle hooks keyed by table name. */
+    hooks: Record<string, TableHooks>;
 }

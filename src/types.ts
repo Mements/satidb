@@ -19,6 +19,16 @@ export const asZodObject = (s: z.ZodType<any>) => s as unknown as z.ZodObject<an
 /** Index definition: single column or composite columns */
 export type IndexDef = string | string[];
 
+/** Lifecycle hooks for a single table. */
+export type TableHooks = {
+    beforeInsert?: (data: Record<string, any>) => Record<string, any> | void;
+    afterInsert?: (entity: Record<string, any>) => void;
+    beforeUpdate?: (data: Record<string, any>, id: number) => Record<string, any> | void;
+    afterUpdate?: (entity: Record<string, any>) => void;
+    beforeDelete?: (id: number) => false | void;
+    afterDelete?: (id: number) => void;
+};
+
 export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
     indexes?: Record<string, IndexDef[]>;
     /**
@@ -65,6 +75,17 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
      * Default: `false`.
      */
     debug?: boolean;
+    /**
+     * Lifecycle hooks per table. Each hook receives data and can transform it.
+     *
+     * - `beforeInsert(data)` — called before insert, return modified data or void
+     * - `afterInsert(entity)` — called after insert with the persisted entity
+     * - `beforeUpdate(data, id)` — called before update, return modified data or void
+     * - `afterUpdate(entity)` — called after update with the updated entity
+     * - `beforeDelete(id)` — called before delete, return false to cancel
+     * - `afterDelete(id)` — called after delete
+     */
+    hooks?: Record<string, TableHooks>;
 };
 
 export type Relationship = {
@@ -184,6 +205,7 @@ export type NavEntityAccessor<
     update: ((id: number, data: Partial<Omit<z.input<S[Table & keyof S]>, 'id'>>) => NavEntity<S, R, Table> | null)
     & ((data: Partial<Omit<z.input<S[Table & keyof S]>, 'id'>>) => UpdateBuilder<NavEntity<S, R, Table>>);
     upsert: (conditions?: Partial<z.infer<S[Table & keyof S]>>, data?: Partial<z.infer<S[Table & keyof S]>>) => NavEntity<S, R, Table>;
+    upsertMany: (rows: Partial<z.infer<S[Table & keyof S]>>[], conditions?: Partial<z.infer<S[Table & keyof S]>>) => NavEntity<S, R, Table>[];
     delete: ((id: number) => void) & (() => DeleteBuilder<NavEntity<S, R, Table>>);
     restore: (id: number) => void;
     select: (...cols: (keyof z.infer<S[Table & keyof S]> & string)[]) => QueryBuilder<NavEntity<S, R, Table>>;
@@ -215,6 +237,7 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     insertMany: (rows: EntityData<S>[]) => AugmentedEntity<S>[];
     update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((data: Partial<EntityData<S>>) => UpdateBuilder<AugmentedEntity<S>>);
     upsert: (conditions?: Partial<InferSchema<S>>, data?: Partial<InferSchema<S>>) => AugmentedEntity<S>;
+    upsertMany: (rows: Partial<InferSchema<S>>[], conditions?: Partial<InferSchema<S>>) => AugmentedEntity<S>[];
     delete: ((id: number) => void) & (() => DeleteBuilder<AugmentedEntity<S>>);
     /** Undo a soft delete by setting deletedAt = null. Requires softDeletes. */
     restore: (id: number) => void;

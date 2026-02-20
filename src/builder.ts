@@ -394,6 +394,28 @@ export class QueryBuilder<T extends Record<string, any>> {
         return { data, total, page, perPage, pages };
     }
 
+    /**
+     * Count rows per group. Must call `.groupBy()` first.
+     * Returns an array of objects with the grouped column(s) and a `count` field.
+     *
+     * ```ts
+     * db.users.select('role').groupBy('role').countGrouped()
+     * // → [{ role: 'admin', count: 5 }, { role: 'member', count: 12 }]
+     * ```
+     */
+    countGrouped(): (Record<string, any> & { count: number })[] {
+        if (this.iqo.groupBy.length === 0) {
+            throw new Error('countGrouped() requires at least one groupBy() call');
+        }
+        const groupCols = this.iqo.groupBy.map(c => `"${c}"`).join(', ');
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const aggSql = selectSql.replace(
+            /^SELECT .+? FROM/,
+            `SELECT ${groupCols}, COUNT(*) as count FROM`
+        );
+        return this.executor(aggSql, params, true) as any;
+    }
+
 
 
     // ---------- Thenable (async/await support) ----------

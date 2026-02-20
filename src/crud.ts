@@ -40,7 +40,16 @@ export function findMany(ctx: DatabaseContext, entityName: string, conditions: R
 
 export function insert<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, data: Omit<T, 'id'>): AugmentedEntity<any> {
     const schema = ctx.schemas[entityName]!;
-    const validatedData = asZodObject(schema).passthrough().parse(data);
+    let inputData = { ...data } as Record<string, any>;
+
+    // beforeInsert hook — can transform data
+    const hooks = ctx.hooks[entityName];
+    if (hooks?.beforeInsert) {
+        const result = hooks.beforeInsert(inputData);
+        if (result) inputData = result;
+    }
+
+    const validatedData = asZodObject(schema).passthrough().parse(inputData);
     const transformed = transformForStorage(validatedData);
 
     // Auto-inject timestamps
@@ -62,12 +71,24 @@ export function insert<T extends Record<string, any>>(ctx: DatabaseContext, enti
     const newEntity = getById(ctx, entityName, result.lastInsertRowid as number);
     if (!newEntity) throw new Error('Failed to retrieve entity after insertion');
 
+    // afterInsert hook
+    if (hooks?.afterInsert) hooks.afterInsert(newEntity);
+
     return newEntity;
 }
 
 export function update<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, id: number, data: Partial<Omit<T, 'id'>>): AugmentedEntity<any> | null {
     const schema = ctx.schemas[entityName]!;
-    const validatedData = asZodObject(schema).partial().parse(data);
+    let inputData = { ...data } as Record<string, any>;
+
+    // beforeUpdate hook — can transform data
+    const hooks = ctx.hooks[entityName];
+    if (hooks?.beforeUpdate) {
+        const result = hooks.beforeUpdate(inputData, id);
+        if (result) inputData = result;
+    }
+
+    const validatedData = asZodObject(schema).partial().parse(inputData);
     const transformed = transformForStorage(validatedData);
     if (Object.keys(transformed).length === 0 && !ctx.timestamps) return getById(ctx, entityName, id);
 
@@ -81,7 +102,12 @@ export function update<T extends Record<string, any>>(ctx: DatabaseContext, enti
     if (ctx.debug) console.log('[satidb]', sql, [...Object.values(transformed), id]);
     ctx.db.query(sql).run(...Object.values(transformed), id);
 
-    return getById(ctx, entityName, id);
+    const updated = getById(ctx, entityName, id);
+
+    // afterUpdate hook
+    if (hooks?.afterUpdate && updated) hooks.afterUpdate(updated);
+
+    return updated;
 }
 
 export function updateWhere(ctx: DatabaseContext, entityName: string, data: Record<string, any>, conditions: Record<string, any>): number {
@@ -131,7 +157,17 @@ export function upsert<T extends Record<string, any>>(ctx: DatabaseContext, enti
 }
 
 export function deleteEntity(ctx: DatabaseContext, entityName: string, id: number): void {
+    // beforeDelete hook — return false to cancel
+    const hooks = ctx.hooks[entityName];
+    if (hooks?.beforeDelete) {
+        const result = hooks.beforeDelete(id);
+        if (result === false) return;
+    }
+
     ctx.db.query(`DELETE FROM "${entityName}" WHERE id = ?`).run(id);
+
+    // afterDelete hook
+    if (hooks?.afterDelete) hooks.afterDelete(id);
 }
 
 /** Delete all rows matching the given conditions. Returns the number of rows affected. */
@@ -169,11 +205,20 @@ export function insertMany<T extends Record<string, any>>(ctx: DatabaseContext, 
     if (rows.length === 0) return [];
     const schema = ctx.schemas[entityName]!;
     const zodSchema = asZodObject(schema).passthrough();
+    const hooks = ctx.hooks[entityName];
 
     const txn = ctx.db.transaction(() => {
         const ids: number[] = [];
-        for (const data of rows) {
-            const validatedData = zodSchema.parse(data);
+        for (let data of rows) {
+            let inputData = { ...data } as Record<string, any>;
+
+            // beforeInsert hook
+            if (hooks?.beforeInsert) {
+                const result = hooks.beforeInsert(inputData);
+                if (result) inputData = result;
+            }
+
+            const validatedData = zodSchema.parse(inputData);
             const transformed = transformForStorage(validatedData);
 
             if (ctx.timestamps) {
@@ -194,5 +239,27 @@ export function insertMany<T extends Record<string, any>>(ctx: DatabaseContext, 
     });
 
     const ids = txn();
-    return ids.map((id: number) => getById(ctx, entityName, id)!).filter(Boolean);
+    const entities = ids.map((id: number) => getById(ctx, entityName, id)!).filter(Boolean);
+
+    // afterInsert hooks
+    if (hooks?.afterInsert) {
+        for (const entity of entities) hooks.afterInsert(entity);
+    }
+
+    return entities;
+}
+
+/** Upsert multiple rows in a single transaction. */
+export function upsertMany<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, rows: any[], conditions: Record<string, any> = {}): AugmentedEntity<any>[] {
+    if (rows.length === 0) return [];
+
+    const txn = ctx.db.transaction(() => {
+        const results: AugmentedEntity<any>[] = [];
+        for (const data of rows) {
+            results.push(upsert(ctx, entityName, data, conditions));
+        }
+        return results;
+    });
+
+    return txn();
 }

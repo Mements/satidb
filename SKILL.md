@@ -392,7 +392,29 @@ db.users.delete().where({ score: { $lt: 10 } }).exec();  // soft-deletes matchin
 
 ---
 
-## 10. Debug Mode (Query Logging)
+## 10. Lifecycle Hooks
+
+```typescript
+const db = new Database('app.db', schemas, {
+    hooks: {
+        users: {
+            beforeInsert: (data) => ({ ...data, name: data.name.trim() }),
+            afterInsert:  (entity) => console.log('Created:', entity.id),
+            beforeUpdate: (data, id) => ({ ...data, updatedBy: 'system' }),
+            afterUpdate:  (entity) => auditLog.push(entity),
+            beforeDelete: (id) => { if (isProtected(id)) return false; },  // cancel
+            afterDelete:  (id) => console.log('Deleted:', id),
+        },
+    },
+});
+```
+
+Hooks fire on all paths: insert, insertMany, update, delete (hard and soft).
+`beforeInsert`/`beforeUpdate` can return modified data. `beforeDelete` can return `false` to cancel.
+
+---
+
+## 11. Debug Mode (Query Logging)
 
 ```typescript
 const db = new Database('app.db', schemas, { debug: true });
@@ -401,7 +423,7 @@ const db = new Database('app.db', schemas, { debug: true });
 
 ---
 
-## 11. Unique Constraints
+## 12. Unique Constraints
 
 ```typescript
 const db = new Database('app.db', schemas, {
@@ -416,7 +438,7 @@ db.users.insert({ name: 'Bob2', email: 'bob@co.com' }); // throws — duplicate 
 
 ---
 
-## 12. Schema Introspection
+## 13. Schema Introspection
 
 ```typescript
 db.tables();            // ['users', 'posts'] — user-defined table names
@@ -425,7 +447,28 @@ db.columns('users');    // [{ name: 'id', type: 'INTEGER', ... }, { name: 'email
 
 ---
 
-## 13. Schema Validation
+## 14. upsertMany
+
+```typescript
+// Batch upsert — inserts or updates based on id/conditions
+db.users.upsertMany([
+    { name: 'Alice', email: 'a@co.com', score: 100 },
+    { name: 'Bob',   email: 'b@co.com', score: 200 },
+]);
+```
+
+---
+
+## 15. countGrouped
+
+```typescript
+db.users.select('role').groupBy('role').countGrouped()
+// → [{ role: 'admin', count: 5 }, { role: 'member', count: 12 }]
+```
+
+---
+
+## 16. Schema Validation
 
 Zod validates every insert and update:
 ```typescript
@@ -442,7 +485,7 @@ user.score; // → 0 (from z.number().int().default(0))
 
 ---
 
-## 14. Common Patterns
+## 17. Common Patterns
 
 ### Chat/message storage
 ```typescript
@@ -562,7 +605,7 @@ src/
 
 ### Tests
 ```bash
-bun test                               # 160 tests, ~1.5s
+bun test                               # 174 tests, ~1.4s
 bun test test/crud.test.ts             # just CRUD
 bun test test/fluent.test.ts           # query builder
 bun test test/relations.test.ts        # relationships

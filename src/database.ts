@@ -24,7 +24,7 @@ import type { DatabaseContext } from './context';
 import { buildWhereClause } from './helpers';
 import { attachMethods } from './entity';
 import {
-    insert, insertMany, update, upsert, deleteEntity, createDeleteBuilder,
+    insert, insertMany, update, upsert, upsertMany, deleteEntity, createDeleteBuilder,
     getById, getOne, findMany, updateWhere, createUpdateBuilder,
 } from './crud';
 
@@ -86,6 +86,7 @@ class _Database<Schemas extends SchemaMap> {
             debug: this._debug,
             timestamps: this._timestamps,
             softDeletes: this._softDeletes,
+            hooks: options.hooks ?? {},
         };
 
         this.initializeTables();
@@ -105,12 +106,20 @@ class _Database<Schemas extends SchemaMap> {
                     return createUpdateBuilder(this._ctx, entityName, idOrData);
                 },
                 upsert: (conditions, data) => upsert(this._ctx, entityName, data, conditions),
+                upsertMany: (rows: any[], conditions?: any) => upsertMany(this._ctx, entityName, rows, conditions),
                 delete: ((id?: any) => {
                     if (typeof id === 'number') {
+                        // beforeDelete hook — return false to cancel
+                        const hooks = this._ctx.hooks[entityName];
+                        if (hooks?.beforeDelete) {
+                            const result = hooks.beforeDelete(id);
+                            if (result === false) return;
+                        }
                         if (this._softDeletes) {
                             // Soft delete: set deletedAt instead of removing
                             const now = new Date().toISOString();
                             this.db.query(`UPDATE "${entityName}" SET "deletedAt" = ? WHERE id = ?`).run(now, id);
+                            if (hooks?.afterDelete) hooks.afterDelete(id);
                             return;
                         }
                         return deleteEntity(this._ctx, entityName, id);
