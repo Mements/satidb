@@ -13,6 +13,7 @@ import { transformForStorage } from './schema';
  * - Operators: `{ age: { $gt: 18 } }`
  * - $in: `{ status: { $in: ['active', 'pending'] } }`
  * - $or: `{ $or: [{ name: 'Alice' }, { name: 'Bob' }] }`
+ * - $isNull / $isNotNull: `{ deletedAt: { $isNull: true } }`
  */
 export function buildWhereClause(conditions: Record<string, any>, tablePrefix?: string): { clause: string; values: any[] } {
     const parts: string[] = [];
@@ -70,6 +71,16 @@ export function buildWhereClause(conditions: Record<string, any>, tablePrefix?: 
                 if (!Array.isArray(operand) || operand.length !== 2) throw new Error(`$between for '${key}' requires [min, max]`);
                 parts.push(`${fieldName} BETWEEN ? AND ?`);
                 values.push(transformForStorage({ v: operand[0] }).v, transformForStorage({ v: operand[1] }).v);
+                continue;
+            }
+
+            if (operator === '$isNull') {
+                parts.push(`${fieldName} IS NULL`);
+                continue;
+            }
+
+            if (operator === '$isNotNull') {
+                parts.push(`${fieldName} IS NOT NULL`);
                 continue;
             }
 

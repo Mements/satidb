@@ -113,7 +113,7 @@ db.users.delete().where({ role: 'banned' }).exec();  // returns deleted count
 const admins = db.users.select().where({ role: 'admin' }).all();
 ```
 
-### Operators: `$gt` `$gte` `$lt` `$lte` `$ne` `$in` `$like` `$notIn` `$between`
+### Operators: `$gt` `$gte` `$lt` `$lte` `$ne` `$in` `$like` `$notIn` `$between` `$isNull` `$isNotNull`
 ```typescript
 const top = db.users.select()
     .where({ score: { $gt: 50 } })
@@ -140,6 +140,10 @@ const excluded = db.users.select()
 const range = db.posts.select()
     .where({ year: { $between: [2020, 2025] } })
     .all();
+
+// NULL checks:
+const noBio = db.users.select().where({ bio: { $isNull: true } }).all();
+const hasBio = db.users.select().where({ bio: { $isNotNull: true } }).all();
 ```
 
 ### `$or`
@@ -168,9 +172,42 @@ const page2 = db.users.select()
 const activeCount = db.users.select().where({ role: { $ne: 'banned' } }).count();
 ```
 
-### Group by
+### Group by + HAVING
 ```typescript
 const byRole = db.users.select('role').groupBy('role').raw().all();
+
+// Only groups with more than 5 members:
+const popular = db.users.select('role')
+    .groupBy('role')
+    .having({ 'COUNT(*)': { $gt: 5 } })
+    .raw().all();
+```
+
+### Distinct
+```typescript
+const uniqueScores = db.users.select('score').distinct().raw().all();
+```
+
+### Aggregate functions
+```typescript
+const total  = db.users.select().sum('score');   // number
+const avg    = db.users.select().avg('score');   // number
+const lowest = db.users.select().min('score');   // number | string | null
+const top    = db.users.select().max('score');   // number | string | null
+
+// With filters:
+const activeSum = db.users.select()
+    .where({ role: { $ne: 'banned' } })
+    .sum('score');
+```
+
+### Paginate helper
+```typescript
+const page = db.users.select()
+    .orderBy('name')
+    .paginate(2, 20);  // page 2, 20 per page
+
+// Returns: { data: T[], total: number, page: number, perPage: number, pages: number }
 ```
 
 ---
@@ -299,7 +336,63 @@ db.close();
 
 ---
 
-## 7. Schema Validation
+## 7. Raw SQL
+
+When you need full control over SQL:
+
+```typescript
+// Select query — returns rows
+const rows = db.raw<{ name: string; total: number }>(
+    'SELECT name, SUM(score) as total FROM users GROUP BY name'
+);
+
+// Mutation — no return
+db.exec('UPDATE users SET score = ? WHERE name = ?', 999, 'Alice');
+```
+
+---
+
+## 8. Auto Timestamps
+
+```typescript
+const db = new Database('app.db', schemas, { timestamps: true });
+
+const user = db.users.insert({ name: 'Alice', email: 'a@co.com' });
+// user row has createdAt + updatedAt set to current ISO timestamp
+
+db.users.update(user.id, { name: 'Alice Updated' });
+// updatedAt bumped, createdAt unchanged
+```
+
+---
+
+## 9. Soft Deletes
+
+```typescript
+const db = new Database('app.db', schemas, { softDeletes: true });
+
+db.users.delete(user.id);
+// Row NOT removed — sets `deletedAt` to current timestamp
+
+// Queries auto-exclude soft-deleted rows:
+db.users.select().all();  // only non-deleted
+
+// Include soft-deleted:
+db.users.select().withTrashed().all();  // all rows including deleted
+```
+
+---
+
+## 10. Debug Mode (Query Logging)
+
+```typescript
+const db = new Database('app.db', schemas, { debug: true });
+// All SQL queries logged to console: [satidb] SELECT * FROM users ...
+```
+
+---
+
+## 11. Schema Validation
 
 Zod validates every insert and update:
 ```typescript
@@ -316,7 +409,7 @@ user.score; // → 0 (from z.number().int().default(0))
 
 ---
 
-## 8. Common Patterns
+## 12. Common Patterns
 
 ### Chat/message storage
 ```typescript
@@ -421,7 +514,10 @@ const categories = db.categories.select().with('products').all();
 src/
 ├── index.ts        — barrel exports
 ├── database.ts     — Database class, constructor, table proxy, reactivity
-├── query.ts        — QueryBuilder, IQO compiler, proxy query, ColumnNode
+├── query.ts        — barrel re-export + QueryBuilder factory
+├── builder.ts      — QueryBuilder class (fluent API)
+├── iqo.ts          — Internal Query Object types + SQL compiler
+├── proxy.ts        — Proxy query system (ColumnNode, compileProxyQuery)
 ├── crud.ts         — insert, update, updateWhere, delete, getById, upsert
 ├── entity.ts       — attachMethods (.update(), .delete(), nav)
 ├── schema.ts       — Zod → SQL mapping, migration
@@ -433,7 +529,7 @@ src/
 
 ### Tests
 ```bash
-bun test                               # 121 tests, ~1s
+bun test                               # 148 tests, ~1.5s
 bun test test/crud.test.ts             # just CRUD
 bun test test/fluent.test.ts           # query builder
 bun test test/relations.test.ts        # relationships
@@ -442,7 +538,8 @@ bun test test/reactivity.test.ts       # .on() listeners
 bun test test/ast.test.ts              # AST compiler (unit)
 bun test test/query-builder.test.ts    # IQO compiler (unit)
 bun test test/proxy-query.test.ts      # proxy query (unit)
-bun test test/new-features.test.ts     # new operators, insertMany, groupBy, etc.
+bun test test/new-features.test.ts     # operators, insertMany, groupBy, deleteWhere
+bun test test/v311-features.test.ts    # aggregates, paginate, timestamps, soft deletes, debug
 ```
 
 Each test file creates its own `:memory:` DB via `createTestDb()` from `test/setup.ts`.

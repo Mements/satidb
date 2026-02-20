@@ -22,4 +22,13 @@ export interface DatabaseContext {
 
     /** Build a WHERE clause from a conditions object. */
     buildWhereClause(conditions: Record<string, any>, tablePrefix?: string): { clause: string; values: any[] };
+
+    /** Whether to log SQL to console. */
+    debug: boolean;
+
+    /** Whether tables have createdAt/updatedAt columns. */
+    timestamps: boolean;
+
+    /** Whether soft deletes are enabled (deletedAt column). */
+    softDeletes: boolean;
 }

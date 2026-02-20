@@ -12,11 +12,11 @@ import { type ASTNode, compileAST } from './ast';
 // =============================================================================
 
 export type OrderDirection = 'asc' | 'desc';
-export type WhereOperator = '$gt' | '$gte' | '$lt' | '$lte' | '$ne' | '$in' | '$like' | '$notIn' | '$between';
+export type WhereOperator = '$gt' | '$gte' | '$lt' | '$lte' | '$ne' | '$in' | '$like' | '$notIn' | '$between' | '$isNull' | '$isNotNull';
 
 export interface WhereCondition {
     field: string;
-    operator: '=' | '>' | '>=' | '<' | '<=' | '!=' | 'IN' | 'LIKE' | 'NOT IN' | 'BETWEEN';
+    operator: '=' | '>' | '>=' | '<' | '<=' | '!=' | 'IN' | 'LIKE' | 'NOT IN' | 'BETWEEN' | 'IS NULL' | 'IS NOT NULL';
     value: any;
 }
 
@@ -34,11 +34,13 @@ export interface IQO {
     whereAST: ASTNode | null;
     joins: JoinClause[];
     groupBy: string[];
+    having: WhereCondition[];
     limit: number | null;
     offset: number | null;
     orderBy: { field: string; direction: OrderDirection }[];
     includes: string[];
     raw: boolean;
+    distinct: boolean;
 }
 
 export const OPERATOR_MAP: Record<WhereOperator, string> = {
@@ -51,6 +53,8 @@ export const OPERATOR_MAP: Record<WhereOperator, string> = {
     $like: 'LIKE',
     $notIn: 'NOT IN',
     $between: 'BETWEEN',
+    $isNull: 'IS NULL',
+    $isNotNull: 'IS NOT NULL',
 };
 
 export function transformValueForStorage(value: any): any {
@@ -81,7 +85,7 @@ export function compileIQO(tableName: string, iqo: IQO): { sql: string; params: 
         }
     }
 
-    let sql = `SELECT ${selectParts.join(', ')} FROM ${tableName}`;
+    let sql = `SELECT ${iqo.distinct ? 'DISTINCT ' : ''}${selectParts.join(', ')} FROM ${tableName}`;
 
     // JOIN clauses
     for (const j of iqo.joins) {
@@ -119,6 +123,10 @@ export function compileIQO(tableName: string, iqo: IQO): { sql: string; params: 
                 const [min, max] = w.value as [any, any];
                 whereParts.push(`${qualify(w.field)} BETWEEN ? AND ?`);
                 params.push(transformValueForStorage(min), transformValueForStorage(max));
+            } else if (w.operator === 'IS NULL') {
+                whereParts.push(`${qualify(w.field)} IS NULL`);
+            } else if (w.operator === 'IS NOT NULL') {
+                whereParts.push(`${qualify(w.field)} IS NOT NULL`);
             } else {
                 whereParts.push(`${qualify(w.field)} ${w.operator} ?`);
                 params.push(transformValueForStorage(w.value));
@@ -157,6 +165,24 @@ export function compileIQO(tableName: string, iqo: IQO): { sql: string; params: 
     // GROUP BY
     if (iqo.groupBy.length > 0) {
         sql += ` GROUP BY ${iqo.groupBy.join(', ')}`;
+    }
+
+    // HAVING
+    if (iqo.having && iqo.having.length > 0) {
+        const havingParts: string[] = [];
+        for (const h of iqo.having) {
+            if (h.operator === 'IS NULL') {
+                havingParts.push(`${h.field} IS NULL`);
+            } else if (h.operator === 'IS NOT NULL') {
+                havingParts.push(`${h.field} IS NOT NULL`);
+            } else {
+                havingParts.push(`${h.field} ${h.operator} ?`);
+                params.push(transformValueForStorage(h.value));
+            }
+        }
+        if (havingParts.length > 0) {
+            sql += ` HAVING ${havingParts.join(' AND ')}`;
+        }
     }
 
     // ORDER BY

@@ -39,6 +39,7 @@ export function createQueryBuilder(ctx: DatabaseContext, entityName: string, ini
     const schema = ctx.schemas[entityName]!;
 
     const executor = (sql: string, params: any[], raw: boolean): any[] => {
+        if (ctx.debug) console.log('[satidb]', sql, params);
         const rows = ctx.db.query(sql).all(...params);
         if (raw) return rows;
         return rows.map((row: any) => ctx.attachMethods(entityName, transformFromStorage(row, schema)));
@@ -132,5 +133,11 @@ export function createQueryBuilder(ctx: DatabaseContext, entityName: string, ini
 
     const builder = new QueryBuilder(entityName, executor, singleExecutor, joinResolver, conditionResolver, eagerLoader);
     if (initialCols.length > 0) builder.select(...initialCols);
+
+    // Auto-filter soft-deleted rows unless withTrashed() is called
+    if (ctx.softDeletes) {
+        builder.where({ deletedAt: { $isNull: true } });
+    }
+
     return builder;
 }

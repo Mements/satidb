@@ -57,11 +57,13 @@ export class QueryBuilder<T extends Record<string, any>> {
             whereAST: null,
             joins: [],
             groupBy: [],
+            having: [],
             limit: null,
             offset: null,
             orderBy: [],
             includes: [],
             raw: false,
+            distinct: false,
         };
     }
 
@@ -291,6 +293,92 @@ export class QueryBuilder<T extends Record<string, any>> {
     groupBy(...fields: string[]): this {
         this.iqo.groupBy.push(...fields);
         return this;
+    }
+
+    /** Return only distinct rows. */
+    distinct(): this {
+        this.iqo.distinct = true;
+        return this;
+    }
+
+    /**
+     * Include soft-deleted rows in query results.
+     * Only relevant when `softDeletes: true` is set in Database options.
+     */
+    withTrashed(): this {
+        // Remove the auto-injected `deletedAt IS NULL` filter
+        this.iqo.wheres = this.iqo.wheres.filter(
+            w => !(w.field === 'deletedAt' && w.operator === 'IS NULL')
+        );
+        return this;
+    }
+
+    /**
+     * Add HAVING conditions (used after groupBy for aggregate filtering).
+     *
+     * ```ts
+     * db.orders.select('user_id').groupBy('user_id')
+     *   .having({ 'COUNT(*)': { $gt: 5 } })
+     *   .raw().all()
+     * ```
+     */
+    having(conditions: Record<string, any>): this {
+        for (const [field, value] of Object.entries(conditions)) {
+            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                for (const [opKey, operand] of Object.entries(value)) {
+                    const sqlOp = OPERATOR_MAP[opKey as WhereOperator];
+                    if (!sqlOp) throw new Error(`Unsupported having operator: '${opKey}'`);
+                    this.iqo.having.push({ field, operator: sqlOp as WhereCondition['operator'], value: operand });
+                }
+            } else {
+                this.iqo.having.push({ field, operator: '=', value });
+            }
+        }
+        return this;
+    }
+
+    // ---------- Aggregate Methods ----------
+
+    /** Returns the SUM of a numeric column. */
+    sum(field: keyof T & string): number {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const aggSql = selectSql.replace(/^SELECT .+? FROM/, `SELECT COALESCE(SUM("${field}"), 0) as val FROM`);
+        const results = this.executor(aggSql, params, true);
+        return (results[0] as any)?.val ?? 0;
+    }
+
+    /** Returns the AVG of a numeric column. */
+    avg(field: keyof T & string): number {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const aggSql = selectSql.replace(/^SELECT .+? FROM/, `SELECT AVG("${field}") as val FROM`);
+        const results = this.executor(aggSql, params, true);
+        return (results[0] as any)?.val ?? 0;
+    }
+
+    /** Returns the MIN of a column. */
+    min(field: keyof T & string): number | string | null {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const aggSql = selectSql.replace(/^SELECT .+? FROM/, `SELECT MIN("${field}") as val FROM`);
+        const results = this.executor(aggSql, params, true);
+        return (results[0] as any)?.val ?? null;
+    }
+
+    /** Returns the MAX of a column. */
+    max(field: keyof T & string): number | string | null {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const aggSql = selectSql.replace(/^SELECT .+? FROM/, `SELECT MAX("${field}") as val FROM`);
+        const results = this.executor(aggSql, params, true);
+        return (results[0] as any)?.val ?? null;
+    }
+
+    /** Paginate results. Returns { data, total, page, perPage, pages }. */
+    paginate(page: number = 1, perPage: number = 20): { data: T[]; total: number; page: number; perPage: number; pages: number } {
+        const total = this.count();
+        const pages = Math.ceil(total / perPage);
+        this.iqo.limit = perPage;
+        this.iqo.offset = (page - 1) * perPage;
+        const data = this.all();
+        return { data, total, page, perPage, pages };
     }
 
 

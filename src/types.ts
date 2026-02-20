@@ -19,7 +19,6 @@ export const asZodObject = (s: z.ZodType<any>) => s as unknown as z.ZodObject<an
 /** Index definition: single column or composite columns */
 export type IndexDef = string | string[];
 
-/** Options for the Database constructor */
 export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
     indexes?: Record<string, IndexDef[]>;
     /**
@@ -42,6 +41,24 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
      * `.on()` will throw. Default: `true`.
      */
     reactive?: boolean;
+    /**
+     * Auto-add `createdAt` and `updatedAt` TEXT columns to every table.
+     * `createdAt` is set on insert, `updatedAt` on insert + update.
+     * Default: `false`.
+     */
+    timestamps?: boolean;
+    /**
+     * Enable soft deletes. Adds a `deletedAt` TEXT column to every table.
+     * `delete()` sets `deletedAt` instead of removing the row.
+     * Use `.withTrashed()` on queries to include soft-deleted rows.
+     * Default: `false`.
+     */
+    softDeletes?: boolean;
+    /**
+     * Log every SQL query to the console. Useful for debugging.
+     * Default: `false`.
+     */
+    debug?: boolean;
 };
 
 export type Relationship = {

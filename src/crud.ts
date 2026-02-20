@@ -42,6 +42,14 @@ export function insert<T extends Record<string, any>>(ctx: DatabaseContext, enti
     const schema = ctx.schemas[entityName]!;
     const validatedData = asZodObject(schema).passthrough().parse(data);
     const transformed = transformForStorage(validatedData);
+
+    // Auto-inject timestamps
+    if (ctx.timestamps) {
+        const now = new Date().toISOString();
+        transformed.createdAt = now;
+        transformed.updatedAt = now;
+    }
+
     const columns = Object.keys(transformed);
 
     const quotedCols = columns.map(c => `"${c}"`);
@@ -49,6 +57,7 @@ export function insert<T extends Record<string, any>>(ctx: DatabaseContext, enti
         ? `INSERT INTO "${entityName}" DEFAULT VALUES`
         : `INSERT INTO "${entityName}" (${quotedCols.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
 
+    if (ctx.debug) console.log('[satidb]', sql, Object.values(transformed));
     const result = ctx.db.query(sql).run(...Object.values(transformed));
     const newEntity = getById(ctx, entityName, result.lastInsertRowid as number);
     if (!newEntity) throw new Error('Failed to retrieve entity after insertion');
@@ -60,10 +69,17 @@ export function update<T extends Record<string, any>>(ctx: DatabaseContext, enti
     const schema = ctx.schemas[entityName]!;
     const validatedData = asZodObject(schema).partial().parse(data);
     const transformed = transformForStorage(validatedData);
-    if (Object.keys(transformed).length === 0) return getById(ctx, entityName, id);
+    if (Object.keys(transformed).length === 0 && !ctx.timestamps) return getById(ctx, entityName, id);
+
+    // Auto-update timestamp
+    if (ctx.timestamps) {
+        transformed.updatedAt = new Date().toISOString();
+    }
 
     const setClause = Object.keys(transformed).map(key => `"${key}" = ?`).join(', ');
-    ctx.db.query(`UPDATE "${entityName}" SET ${setClause} WHERE id = ?`).run(...Object.values(transformed), id);
+    const sql = `UPDATE "${entityName}" SET ${setClause} WHERE id = ?`;
+    if (ctx.debug) console.log('[satidb]', sql, [...Object.values(transformed), id]);
+    ctx.db.query(sql).run(...Object.values(transformed), id);
 
     return getById(ctx, entityName, id);
 }
@@ -147,6 +163,13 @@ export function insertMany<T extends Record<string, any>>(ctx: DatabaseContext, 
         for (const data of rows) {
             const validatedData = zodSchema.parse(data);
             const transformed = transformForStorage(validatedData);
+
+            if (ctx.timestamps) {
+                const now = new Date().toISOString();
+                transformed.createdAt = now;
+                transformed.updatedAt = now;
+            }
+
             const columns = Object.keys(transformed);
             const quotedCols = columns.map(c => `"${c}"`);
             const sql = columns.length === 0

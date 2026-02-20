@@ -41,6 +41,9 @@ type Listener = {
 class _Database<Schemas extends SchemaMap> {
     private db: SqliteDatabase;
     private _reactive: boolean;
+    private _timestamps: boolean;
+    private _softDeletes: boolean;
+    private _debug: boolean;
     private schemas: Schemas;
     private relationships: Relationship[];
     private options: DatabaseOptions;
@@ -67,6 +70,9 @@ class _Database<Schemas extends SchemaMap> {
         this.schemas = schemas;
         this.options = options;
         this._reactive = options.reactive !== false; // default true
+        this._timestamps = options.timestamps === true;
+        this._softDeletes = options.softDeletes === true;
+        this._debug = options.debug === true;
         this._pollInterval = options.pollInterval ?? 100;
         this.relationships = options.relations ? parseRelationsConfig(options.relations, schemas) : [];
 
@@ -77,6 +83,9 @@ class _Database<Schemas extends SchemaMap> {
             relationships: this.relationships,
             attachMethods: (name, entity) => attachMethods(this._ctx, name, entity),
             buildWhereClause: (conds, prefix) => buildWhereClause(conds, prefix),
+            debug: this._debug,
+            timestamps: this._timestamps,
+            softDeletes: this._softDeletes,
         };
 
         this.initializeTables();
@@ -96,7 +105,15 @@ class _Database<Schemas extends SchemaMap> {
                 },
                 upsert: (conditions, data) => upsert(this._ctx, entityName, data, conditions),
                 delete: ((id?: any) => {
-                    if (typeof id === 'number') return deleteEntity(this._ctx, entityName, id);
+                    if (typeof id === 'number') {
+                        if (this._softDeletes) {
+                            // Soft delete: set deletedAt instead of removing
+                            const now = new Date().toISOString();
+                            this.db.run(`UPDATE "${entityName}" SET "deletedAt" = ? WHERE id = ?`, now, id);
+                            return;
+                        }
+                        return deleteEntity(this._ctx, entityName, id);
+                    }
                     return createDeleteBuilder(this._ctx, entityName);
                 }) as any,
                 select: (...cols: string[]) => createQueryBuilder(this._ctx, entityName, cols),
@@ -117,6 +134,17 @@ class _Database<Schemas extends SchemaMap> {
         for (const [entityName, schema] of Object.entries(this.schemas)) {
             const storableFields = getStorableFields(schema);
             const columnDefs = storableFields.map(f => `"${f.name}" ${zodTypeToSqlType(f.type)}`);
+
+            // Add timestamp columns
+            if (this._timestamps) {
+                columnDefs.push('"createdAt" TEXT');
+                columnDefs.push('"updatedAt" TEXT');
+            }
+            // Add soft delete column
+            if (this._softDeletes) {
+                columnDefs.push('"deletedAt" TEXT');
+            }
+
             const constraints: string[] = [];
 
             const belongsToRels = this.relationships.filter(
@@ -306,8 +334,27 @@ class _Database<Schemas extends SchemaMap> {
         return executeProxyQuery(
             this.schemas,
             callback as any,
-            (sql: string, params: any[]) => this.db.query(sql).all(...params) as T[],
+            (sql: string, params: any[]) => {
+                if (this._debug) console.log('[satidb]', sql, params);
+                return this.db.query(sql).all(...params) as T[];
+            },
         );
+    }
+
+    // =========================================================================
+    // Raw SQL
+    // =========================================================================
+
+    /** Execute a raw SQL query and return results. */
+    public raw<T = any>(sql: string, ...params: any[]): T[] {
+        if (this._debug) console.log('[satidb]', sql, params);
+        return this.db.query(sql).all(...params) as T[];
+    }
+
+    /** Execute a raw SQL statement (INSERT/UPDATE/DELETE) without returning rows. */
+    public exec(sql: string, ...params: any[]): void {
+        if (this._debug) console.log('[satidb]', sql, params);
+        this.db.run(sql, ...params);
     }
 }
 
