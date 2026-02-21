@@ -465,6 +465,56 @@ export class QueryBuilder<T extends Record<string, any>, TResult extends Record<
         return this.executor(aggSql, params, true) as any;
     }
 
+    // ---------- Batch Mutations ----------
+
+    /**
+     * Update all rows matching the current query's WHERE conditions.
+     * Returns the number of affected rows.
+     * ```ts
+     * db.users.select().where({ role: 'guest' }).updateAll({ role: 'member' })
+     * ```
+     */
+    updateAll(data: Partial<T>): number {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        // Extract WHERE clause from compiled SELECT
+        const whereMatch = selectSql.match(/WHERE (.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|\s+HAVING|$)/s);
+        const wherePart = whereMatch ? whereMatch[1] : '1=1';
+
+        const setClauses: string[] = [];
+        const setParams: any[] = [];
+        for (const [col, val] of Object.entries(data)) {
+            setClauses.push(`"${col}" = ?`);
+            if (val !== null && val !== undefined && typeof val === 'object' && !(val instanceof Buffer) && !(val instanceof Date)) {
+                setParams.push(JSON.stringify(val));
+            } else {
+                setParams.push(val);
+            }
+        }
+
+        const updateSql = `UPDATE "${this.tableName}" SET ${setClauses.join(', ')} WHERE ${wherePart}`;
+        this.executor(updateSql, [...setParams, ...params], true);
+        // Return affected rows via changes()
+        const result = this.executor(`SELECT changes() as c`, [], true);
+        return (result[0] as any)?.c ?? 0;
+    }
+
+    /**
+     * Delete all rows matching the current query's WHERE conditions.
+     * Returns the number of deleted rows.
+     * ```ts
+     * db.users.select().where({ role: 'guest' }).deleteAll()
+     * ```
+     */
+    deleteAll(): number {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const whereMatch = selectSql.match(/WHERE (.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|\s+HAVING|$)/s);
+        const wherePart = whereMatch ? whereMatch[1] : '1=1';
+
+        const deleteSql = `DELETE FROM "${this.tableName}" WHERE ${wherePart}`;
+        this.executor(deleteSql, params, true);
+        const result = this.executor(`SELECT changes() as c`, [], true);
+        return (result[0] as any)?.c ?? 0;
+    }
 
 
     // ---------- Thenable (async/await support) ----------

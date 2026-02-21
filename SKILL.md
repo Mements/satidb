@@ -638,7 +638,42 @@ Subqueries compile the inner QueryBuilder IQO and nest as `WHERE col IN (SELECT 
 
 ---
 
-## 28. Schema Validation
+## 28. Batch updateAll
+
+```typescript
+const affected = db.users.select().where({ role: 'guest' }).updateAll({ role: 'member' });
+// → 42 (number of updated rows)
+```
+Updates all matching rows in a single statement. Combines with `.where()`, `.whereIn()`, etc.
+
+---
+
+## 29. Batch deleteAll
+
+```typescript
+const deleted = db.users.select().where({ role: 'guest' }).deleteAll();
+// → 12 (number of deleted rows)
+```
+
+---
+
+## 30. Transactions
+
+```typescript
+db.transaction(() => {
+    db.users.insert({ name: 'Alice' });
+    db.orders.insert({ userId: 1, amount: 100 });
+}); // auto-commits; rolls back on error
+
+const count = db.transaction(() => {
+    db.users.insert({ name: 'Bob' });
+    return db.users.count(); // return values supported
+});
+```
+
+---
+
+## 31. Schema Validation
 
 Zod validates every insert and update:
 ```typescript
@@ -655,7 +690,7 @@ user.score; // → 0 (from z.number().int().default(0))
 
 ---
 
-## 29. Common Patterns
+## 32. Common Patterns
 
 ### Chat/message storage
 ```typescript
@@ -775,7 +810,7 @@ src/
 
 ### Tests
 ```bash
-bun test                               # 218 tests, ~1.4s
+bun test                               # 229 tests, ~2s
 bun test test/crud.test.ts             # just CRUD
 bun test test/fluent.test.ts           # query builder
 bun test test/relations.test.ts        # relationships
