@@ -87,6 +87,8 @@ class _Database<Schemas extends SchemaMap> {
             timestamps: this._timestamps,
             softDeletes: this._softDeletes,
             hooks: options.hooks ?? {},
+            computed: options.computed ?? {},
+            cascade: options.cascade ?? {},
         };
 
         this.initializeTables();
@@ -116,8 +118,27 @@ class _Database<Schemas extends SchemaMap> {
                             const result = hooks.beforeDelete(id);
                             if (result === false) return;
                         }
+
+                        // Cascade delete children first
+                        const cascadeTargets = this._ctx.cascade[entityName];
+                        if (cascadeTargets) {
+                            for (const childTable of cascadeTargets) {
+                                // Find FK from child → this parent via relationships
+                                const rel = this._ctx.relationships.find(
+                                    r => r.type === 'belongs-to' && r.from === childTable && r.to === entityName
+                                );
+                                if (rel) {
+                                    if (this._softDeletes) {
+                                        const now = new Date().toISOString();
+                                        this.db.query(`UPDATE "${childTable}" SET "deletedAt" = ? WHERE "${rel.foreignKey}" = ?`).run(now, id);
+                                    } else {
+                                        this.db.query(`DELETE FROM "${childTable}" WHERE "${rel.foreignKey}" = ?`).run(id);
+                                    }
+                                }
+                            }
+                        }
+
                         if (this._softDeletes) {
-                            // Soft delete: set deletedAt instead of removing
                             const now = new Date().toISOString();
                             this.db.query(`UPDATE "${entityName}" SET "deletedAt" = ? WHERE id = ?`).run(now, id);
                             if (hooks?.afterDelete) hooks.afterDelete(id);
@@ -133,6 +154,10 @@ class _Database<Schemas extends SchemaMap> {
                     this.db.query(`UPDATE "${entityName}" SET "deletedAt" = NULL WHERE id = ?`).run(id);
                 }) as any,
                 select: (...cols: string[]) => createQueryBuilder(this._ctx, entityName, cols),
+                count: () => {
+                    const row = this.db.query(`SELECT COUNT(*) as count FROM "${entityName}"${this._softDeletes ? ' WHERE "deletedAt" IS NULL' : ''}`).get() as any;
+                    return row?.count ?? 0;
+                },
                 on: (event: ChangeEvent, callback: (row: any) => void | Promise<void>) => {
                     return this._registerListener(entityName, event, callback);
                 },

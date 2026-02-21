@@ -86,6 +86,20 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
      * - `afterDelete(id)` — called after delete
      */
     hooks?: Record<string, TableHooks>;
+    /**
+     * Computed/virtual getters per table. Injected on every read.
+     * ```ts
+     * computed: { users: { fullName: (u) => u.first + ' ' + u.last } }
+     * ```
+     */
+    computed?: Record<string, Record<string, (entity: Record<string, any>) => any>>;
+    /**
+     * Cascade delete config per table. When a parent is deleted, children are auto-deleted.
+     * ```ts
+     * cascade: { authors: ['books'] }  // deleting author → deletes their books
+     * ```
+     */
+    cascade?: Record<string, string[]>;
 };
 
 export type Relationship = {
@@ -213,6 +227,7 @@ export type NavEntityAccessor<
         (): QueryBuilder<NavEntity<S, R, Table>>;
         <K extends (keyof z.infer<S[Table & keyof S]> | 'id') & string>(...cols: K[]): QueryBuilder<NavEntity<S, R, Table>, Pick<NavEntity<S, R, Table>, K>>;
     };
+    count: () => number;
     on: ((event: 'insert' | 'update', callback: (row: NavEntity<S, R, Table>) => void | Promise<void>) => () => void) &
     ((event: 'delete', callback: (row: { id: number }) => void | Promise<void>) => () => void);
     _tableName: string;
@@ -250,6 +265,7 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
         (): QueryBuilder<AugmentedEntity<S>>;
         <K extends (keyof InferSchema<S> | 'id') & string>(...cols: K[]): QueryBuilder<AugmentedEntity<S>, Pick<AugmentedEntity<S>, K>>;
     };
+    count: () => number;
     on: ((event: 'insert' | 'update', callback: (row: AugmentedEntity<S>) => void | Promise<void>) => () => void) &
     ((event: 'delete', callback: (row: { id: number }) => void | Promise<void>) => () => void);
     _tableName: string;

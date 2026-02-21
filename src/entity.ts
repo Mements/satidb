@@ -47,6 +47,18 @@ export function attachMethods<T extends Record<string, any>>(
         }
     }
 
+    // Attach computed/virtual getters from context
+    const computedGetters = ctx.computed[entityName];
+    if (computedGetters) {
+        for (const [key, fn] of Object.entries(computedGetters)) {
+            Object.defineProperty(augmented, key, {
+                get: () => fn(augmented),
+                enumerable: true,
+                configurable: true,
+            });
+        }
+    }
+
     // Auto-persist proxy: setting a field auto-updates the DB row
     const storableFieldNames = new Set(getStorableFields(ctx.schemas[entityName]!).map(f => f.name));
     return new Proxy(augmented, {

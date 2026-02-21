@@ -534,7 +534,49 @@ Works with `.get()`, `.first()`, `.paginate()`, and `await`.
 
 ---
 
-## 20. Schema Validation
+## 20. Count Shorthand
+
+```typescript
+db.users.count();  // → 42 (fast, no QueryBuilder needed)
+```
+Respects `softDeletes` — only counts non-deleted rows.
+
+---
+
+## 21. Computed Getters
+
+```typescript
+const db = new Database(':memory:', { users: UserSchema }, {
+    computed: {
+        users: {
+            fullName: (u) => `${u.first} ${u.last}`,
+            isVip: (u) => u.score > 100,
+        },
+    },
+});
+const user = db.users.insert({ first: 'Alice', last: 'Smith', ... });
+user.fullName;  // 'Alice Smith'
+user.isVip;     // false
+user.score = 200;
+user.isVip;     // true — recomputes on access
+```
+
+---
+
+## 22. Cascade Deletes
+
+```typescript
+const db = new Database(':memory:', { authors: AuthorSchema, books: BookSchema }, {
+    relations: { books: { author_id: 'authors' } },
+    cascade: { authors: ['books'] },
+});
+db.authors.delete(1);  // → auto-deletes all books with author_id = 1
+```
+With `softDeletes: true`, children are soft-deleted too.
+
+---
+
+## 23. Schema Validation
 
 Zod validates every insert and update:
 ```typescript
@@ -551,7 +593,7 @@ user.score; // → 0 (from z.number().int().default(0))
 
 ---
 
-## 21. Common Patterns
+## 24. Common Patterns
 
 ### Chat/message storage
 ```typescript
@@ -671,7 +713,7 @@ src/
 
 ### Tests
 ```bash
-bun test                               # 192 tests, ~1.2s
+bun test                               # 201 tests, ~1.4s
 bun test test/crud.test.ts             # just CRUD
 bun test test/fluent.test.ts           # query builder
 bun test test/relations.test.ts        # relationships

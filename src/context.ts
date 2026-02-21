@@ -34,4 +34,10 @@ export interface DatabaseContext {
 
     /** Lifecycle hooks keyed by table name. */
     hooks: Record<string, TableHooks>;
+
+    /** Computed/virtual getters per table. */
+    computed: Record<string, Record<string, (entity: Record<string, any>) => any>>;
+
+    /** Cascade delete config — parent table → list of child tables to auto-delete. */
+    cascade: Record<string, string[]>;
 }
