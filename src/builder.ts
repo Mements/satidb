@@ -572,6 +572,34 @@ export class QueryBuilder<T extends Record<string, any>, TResult extends Record<
         return (result[0] as any)?.c ?? 0;
     }
 
+    /**
+     * Atomically increment a numeric column for matching rows.
+     * Returns the number of affected rows.
+     * ```ts
+     * db.users.select().where({ id: 1 }).increment('score', 10)
+     * ```
+     */
+    increment(column: keyof T & string, amount: number = 1): number {
+        const { sql: selectSql, params } = compileIQO(this.tableName, this.iqo);
+        const whereMatch = selectSql.match(/WHERE (.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|\s+HAVING|$)/s);
+        const wherePart = whereMatch ? whereMatch[1] : '1=1';
+
+        const sql = `UPDATE "${this.tableName}" SET "${column}" = "${column}" + ? WHERE ${wherePart}`;
+        this.executor(sql, [amount, ...params], true);
+        const result = this.executor(`SELECT changes() as c`, [], true);
+        return (result[0] as any)?.c ?? 0;
+    }
+
+    /**
+     * Atomically decrement a numeric column for matching rows.
+     * Returns the number of affected rows.
+     * ```ts
+     * db.users.select().where({ id: 1 }).decrement('score', 5)
+     * ```
+     */
+    decrement(column: keyof T & string, amount: number = 1): number {
+        return this.increment(column, -amount);
+    }
 
     // ---------- Thenable (async/await support) ----------
 

@@ -723,7 +723,18 @@ const user = db.users.select().where({ id: 1 }).firstOrFail();
 
 ---
 
-## 36. Schema Validation
+## 36. increment / decrement
+
+```typescript
+db.users.select().where({ id: 1 }).increment('score', 10)  // score += 10
+db.users.select().where({ id: 1 }).decrement('score', 5)   // score -= 5
+db.users.select().where({ role: 'vip' }).increment('score') // score += 1 (default)
+```
+Atomic counter updates. Returns the number of affected rows.
+
+---
+
+## 37. Schema Validation
 
 Zod validates every insert and update:
 ```typescript
@@ -740,7 +751,7 @@ user.score; // → 0 (from z.number().int().default(0))
 
 ---
 
-## 37. Common Patterns
+## 38. Common Patterns
 
 ### Chat/message storage
 ```typescript
@@ -860,7 +871,7 @@ src/
 
 ### Tests
 ```bash
-bun test                               # 243 tests, ~2s
+bun test                               # 250 tests, ~1.5s
 bun test test/crud.test.ts             # just CRUD
 bun test test/fluent.test.ts           # query builder
 bun test test/relations.test.ts        # relationships
