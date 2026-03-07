@@ -1,6 +1,6 @@
 {
   "name": "sqlite-zod-orm",
-  "version": "3.26.0",
+  "version": "3.26.1",
   "description": "Type-safe SQLite ORM for Bun — Zod schemas, fluent queries, auto relationships, zero SQL",
   "type": "module",
   "main": "./dist/index.js",
@@ -49,7 +49,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "measure-fn": "^3.3.0",
+    "measure-fn": "^3.10.0",
     "zod": "^3.25.67"
   },
   "engines": {
