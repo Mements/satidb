@@ -143,6 +143,7 @@ class _Database<Schemas extends SchemaMap> {
         for (const entityName of Object.keys(schemas)) {
             const key = entityName as keyof Schemas;
             const accessor: EntityAccessor<Schemas[typeof key]> = {
+                get: (id: number) => this._m(`${entityName}.get`, () => getById(this._ctx, entityName, id)),
                 insert: (data) => this._m(`${entityName}.insert`, () => insert(this._ctx, entityName, data)),
                 insertMany: (rows: any[]) => this._m(`${entityName}.insertMany(${rows.length})`, () => insertMany(this._ctx, entityName, rows)),
                 update: (idOrData: any, data?: any) => {

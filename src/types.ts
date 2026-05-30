@@ -137,15 +137,10 @@ export type Relationship = {
 };
 
 
-// =============================================================================
-// Type Helpers
-// =============================================================================
-
 export type InferSchema<S extends z.ZodType<any>> = z.infer<S>;
 export type InputSchema<S extends z.ZodType<any>> = z.input<S>;
 export type EntityData<S extends z.ZodType<any>> = Omit<InputSchema<S>, 'id'>;
 
-// =============================================================================
 // Navigation Type Inference (simple approach)
 // =============================================================================
 
@@ -240,6 +235,7 @@ export type NavEntityAccessor<
     R extends RelationsConfig,
     Table extends string,
 > = {
+    get: (id: number) => NavEntity<S, R, Table> | null;
     insert: (data: Omit<z.input<S[Table & keyof S]>, 'id'>) => NavEntity<S, R, Table>;
     insertMany: (rows: Omit<z.input<S[Table & keyof S]>, 'id'>[]) => NavEntity<S, R, Table>[];
     update: ((id: number, data: Partial<Omit<z.input<S[Table & keyof S]>, 'id'>>) => NavEntity<S, R, Table> | null)
@@ -280,6 +276,7 @@ export type ChangeEvent = 'insert' | 'update' | 'delete';
 export type ReadonlyEntity<S extends z.ZodType<any>> = InferSchema<S>;
 
 export type EntityAccessor<S extends z.ZodType<any>> = {
+    get: (id: number) => AugmentedEntity<S> | null;
     insert: (data: EntityData<S>) => AugmentedEntity<S>;
     insertMany: (rows: EntityData<S>[]) => AugmentedEntity<S>[];
     update: ((id: number, data: Partial<EntityData<S>>) => AugmentedEntity<S> | null) & ((data: Partial<EntityData<S>>) => UpdateBuilder<AugmentedEntity<S>>);
@@ -318,10 +315,6 @@ export type ReadonlyEntityAccessor<S extends z.ZodType<any>> = {
 export type TypedReadonlyAccessors<T extends ViewSchemaMap> = {
     [K in keyof T]: ReadonlyEntityAccessor<T[K]>;
 };
-
-// =============================================================================
-// Proxy query column types
-// =============================================================================
 
 import type { ColumnNode } from './query';
 
