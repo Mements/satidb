@@ -9,6 +9,7 @@ import type { QueryBuilder } from './query';
 
 export type ZodType = z.ZodTypeAny;
 export type SchemaMap = Record<string, z.ZodType<any>>;
+export type ViewSchemaMap = Record<string, z.ZodType<any>>;
 
 /** Relations config: `{ childTable: { fkColumn: 'parentTable' } }` */
 export type RelationsConfig = Record<string, Record<string, string>>;
@@ -18,6 +19,17 @@ export const asZodObject = (s: z.ZodType<any>) => s as unknown as z.ZodObject<an
 
 /** Index definition: single column or composite columns */
 export type IndexDef = string | string[];
+
+export type ViewDefinition<S extends z.ZodType<any> = z.ZodType<any>> = {
+    schema: S;
+    as: string;
+};
+
+export type ViewDefinitions = Record<string, ViewDefinition<z.ZodType<any>>>;
+
+export function defineView<S extends z.ZodType<any>>(schema: S, as: string): ViewDefinition<S> {
+    return { schema, as };
+}
 
 /** Lifecycle hooks for a single table. */
 export type TableHooks = {
@@ -29,7 +41,10 @@ export type TableHooks = {
     afterDelete?: (id: number) => void;
 };
 
-export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
+export type DatabaseOptions<
+    R extends RelationsConfig = RelationsConfig,
+    V extends ViewDefinitions = {},
+> = {
     indexes?: Record<string, IndexDef[]>;
     /**
      * Unique constraints per table. Each entry is an array of column groups.
@@ -106,6 +121,11 @@ export type DatabaseOptions<R extends RelationsConfig = RelationsConfig> = {
      * ```
      */
     cascade?: Record<string, string[]>;
+    /**
+     * Read-only SQLite views created from declarative definitions.
+     * Each entry provides a Zod schema for typed reads and the SELECT body.
+     */
+    views?: V;
 };
 
 export type Relationship = {
@@ -257,6 +277,8 @@ export type AugmentedEntity<S extends z.ZodType<any>> = InferSchema<S> & {
 
 export type ChangeEvent = 'insert' | 'update' | 'delete';
 
+export type ReadonlyEntity<S extends z.ZodType<any>> = InferSchema<S>;
+
 export type EntityAccessor<S extends z.ZodType<any>> = {
     insert: (data: EntityData<S>) => AugmentedEntity<S>;
     insertMany: (rows: EntityData<S>[]) => AugmentedEntity<S>[];
@@ -280,6 +302,21 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
 
 export type TypedAccessors<T extends SchemaMap> = {
     [K in keyof T]: EntityAccessor<T[K]>;
+};
+
+export type ReadonlyEntityAccessor<S extends z.ZodType<any>> = {
+    select: {
+        (): QueryBuilder<ReadonlyEntity<S>>;
+        <K extends keyof InferSchema<S> & string>(...cols: K[]): QueryBuilder<ReadonlyEntity<S>, Pick<ReadonlyEntity<S>, K>>;
+    };
+    count: () => number;
+    _tableName: string;
+    readonly _schema?: S;
+    readonly _isView: true;
+};
+
+export type TypedReadonlyAccessors<T extends ViewSchemaMap> = {
+    [K in keyof T]: ReadonlyEntityAccessor<T[K]>;
 };
 
 // =============================================================================

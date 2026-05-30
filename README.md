@@ -9,7 +9,7 @@ bun add sqlite-zod-orm
 ## Quick Start
 
 ```typescript
-import { Database, z } from 'sqlite-zod-orm';
+import { Database, defineView, z } from 'sqlite-zod-orm';
 
 const db = new Database('app.db', {
     users: z.object({
@@ -26,6 +26,16 @@ const db = new Database('app.db', {
     relations: { posts: { userId: 'users' } },
     timestamps: true,
     softDeletes: true,
+    views: {
+        active_users: defineView(z.object({
+            name: z.string(),
+            email: z.string(),
+        }), `
+            SELECT name, email
+            FROM users
+            WHERE deletedAt IS NULL
+        `),
+    },
 });
 ```
 
@@ -198,6 +208,28 @@ user.createdAt;  // auto-set on insert
 user.updatedAt;  // auto-bumped on update
 ```
 
+## Views
+
+```typescript
+const db = new Database(':memory:', { trades: TradeSchema }, {
+    views: {
+        latest_token_prices: defineView(z.object({
+            mint: z.string(),
+            latestPrice: z.number(),
+        }), `
+            SELECT mint, MAX(priceSolPerToken) AS latestPrice
+            FROM trades
+            GROUP BY mint
+        `),
+    },
+});
+
+db.latest_token_prices.select().all();  // typed rows
+db.views();                             // ['latest_token_prices']
+```
+
+Views are created on startup and recreated automatically when the definition changes. View accessors are read-only.
+
 ## Raw SQL
 
 ```typescript
@@ -225,6 +257,7 @@ db.exec('UPDATE users SET score = 0 WHERE role = ?', 'guest');
 - whereIn/whereNotIn with subquery support
 - JSON column auto-serialization
 - Unique constraints
+- Declarative read-only views
 - Debug mode (SQL logging)
 - Raw SQL escape hatch
 

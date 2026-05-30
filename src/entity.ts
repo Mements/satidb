@@ -22,8 +22,11 @@ export function attachMethods<T extends Record<string, any>>(
     entity: T,
 ): AugmentedEntity<any> {
     const augmented = entity as any;
-    augmented.update = (data: any) => update(ctx, entityName, entity.id, data);
-    augmented.delete = () => deleteEntity(ctx, entityName, entity.id);
+    const isView = ctx.viewNames.has(entityName);
+    if (!isView) {
+        augmented.update = (data: any) => update(ctx, entityName, entity.id, data);
+        augmented.delete = () => deleteEntity(ctx, entityName, entity.id);
+    }
 
     // Attach lazy relationship navigation
     for (const rel of ctx.relationships) {
@@ -60,6 +63,8 @@ export function attachMethods<T extends Record<string, any>>(
     }
 
     // Auto-persist proxy: setting a field auto-updates the DB row
+    if (isView) return augmented;
+
     const storableFieldNames = new Set(getStorableFields(ctx.schemas[entityName]!).map(f => f.name));
     return new Proxy(augmented, {
         set: (target, prop: string, value) => {

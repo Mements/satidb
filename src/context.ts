@@ -17,6 +17,9 @@ export interface DatabaseContext {
     /** Parsed relationship descriptors. */
     relationships: Relationship[];
 
+    /** Set of registered read-only view names. */
+    viewNames: Set<string>;
+
     /** Augment a raw row with .update()/.delete()/nav methods + auto-persist proxy. */
     attachMethods<T extends Record<string, any>>(entityName: string, entity: T): AugmentedEntity<any>;
 

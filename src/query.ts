@@ -136,7 +136,7 @@ export function createQueryBuilder(ctx: DatabaseContext, entityName: string, ini
     if (initialCols.length > 0) builder.select(...initialCols);
 
     // Auto-filter soft-deleted rows unless withTrashed() is called
-    if (ctx.softDeletes) {
+    if (ctx.softDeletes && !ctx.viewNames.has(entityName)) {
         builder.where({ deletedAt: { $isNull: true } });
     }
 

@@ -12,7 +12,8 @@ import { QueryBuilder, executeProxyQuery, createQueryBuilder, type ProxyQueryRes
 import type {
     SchemaMap, DatabaseOptions, Relationship, RelationsConfig,
     EntityAccessor, TypedAccessors, TypedNavAccessors, AugmentedEntity, UpdateBuilder,
-    ProxyColumns, InferSchema, ChangeEvent,
+    ProxyColumns, InferSchema, ChangeEvent, ViewDefinitions, ViewDefinition,
+    TypedReadonlyAccessors,
 } from './types';
 import { asZodObject } from './types';
 import {
@@ -46,8 +47,10 @@ class _Database<Schemas extends SchemaMap> {
     private _softDeletes: boolean;
     private _debug: boolean;
     private schemas: Schemas;
+    private allSchemas: SchemaMap;
+    private viewDefinitions: ViewDefinitions;
     private relationships: Relationship[];
-    private options: DatabaseOptions;
+    private options: DatabaseOptions<any, any>;
 
     /** Shared context for extracted modules. */
     private _ctx: DatabaseContext;
@@ -89,7 +92,7 @@ class _Database<Schemas extends SchemaMap> {
         return fn();
     }
 
-    constructor(dbFile: string, schemas: Schemas, options: DatabaseOptions = {}) {
+    constructor(dbFile: string, schemas: Schemas, options: DatabaseOptions<any, any> = {}) {
         this._debug = options.debug === true;
         this._measure = createMeasure('satidb');
 
@@ -97,18 +100,26 @@ class _Database<Schemas extends SchemaMap> {
         if (options.wal !== false) this.db.run('PRAGMA journal_mode = WAL');
         this.db.run('PRAGMA foreign_keys = ON');
         this.schemas = schemas;
+        this.viewDefinitions = options.views ?? {};
+        this.allSchemas = {
+            ...this.schemas,
+            ...Object.fromEntries(
+                Object.entries(this.viewDefinitions).map(([viewName, def]) => [viewName, def.schema])
+            ),
+        };
         this.options = options;
         this._reactive = options.reactive !== false; // default true
         this._timestamps = options.timestamps === true;
         this._softDeletes = options.softDeletes === true;
         this._pollInterval = options.pollInterval ?? 100;
-        this.relationships = options.relations ? parseRelationsConfig(options.relations, schemas) : [];
+        this.relationships = options.relations ? parseRelationsConfig(options.relations, this.allSchemas) : [];
 
         // Build the context that extracted modules use
         this._ctx = {
             db: this.db,
-            schemas: this.schemas as SchemaMap,
+            schemas: this.allSchemas,
             relationships: this.relationships,
+            viewNames: new Set(Object.keys(this.viewDefinitions)),
             attachMethods: (name, entity) => attachMethods(this._ctx, name, entity),
             buildWhereClause: (conds, prefix) => buildWhereClause(conds, prefix),
             debug: this._debug,
@@ -126,6 +137,7 @@ class _Database<Schemas extends SchemaMap> {
         this._m('Run migrations', () => this.runMigrations());
         if (options.indexes) this._m('Create indexes', () => this.createIndexes(options.indexes!));
         if (options.unique) this._m('Unique constraints', () => this.createUniqueConstraints(options.unique!));
+        if (options.views) this._m('Create views', () => this.createOrUpdateViews(options.views!));
 
         // Create typed entity accessors (db.users, db.posts, etc.)
         for (const entityName of Object.keys(schemas)) {
@@ -196,6 +208,11 @@ class _Database<Schemas extends SchemaMap> {
                 _tableName: entityName,
             };
             (this as any)[key] = accessor;
+        }
+
+        for (const [viewName, def] of Object.entries(this.viewDefinitions)) {
+            const key = viewName as keyof typeof this.viewDefinitions;
+            (this as any)[key] = this.createReadonlyAccessor(viewName, def);
         }
     }
 
@@ -308,6 +325,63 @@ class _Database<Schemas extends SchemaMap> {
                 this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS "${idxName}" ON "${tableName}" (${cols.map(c => `"${c}"`).join(', ')})`);
             }
         }
+    }
+
+    private createOrUpdateViews(views: ViewDefinitions): void {
+        for (const [viewName, def] of Object.entries(views)) {
+            const selectSql = this.normalizeViewSelect(def.as);
+            const createSql = `CREATE VIEW "${viewName}" AS ${selectSql}`;
+            const existing = this.db.query(
+                'SELECT type, sql FROM sqlite_master WHERE name = ?'
+            ).get(viewName) as { type?: string; sql?: string | null } | null;
+
+            if (!existing) {
+                this.db.run(createSql);
+                continue;
+            }
+
+            if (existing.type !== 'view') {
+                throw new Error(`"${viewName}" already exists and is not a view.`);
+            }
+
+            if (this.normalizeSql(existing.sql ?? '') !== this.normalizeSql(createSql)) {
+                this.db.run(`DROP VIEW IF EXISTS "${viewName}"`);
+                this.db.run(createSql);
+            }
+        }
+    }
+
+    private createReadonlyAccessor(viewName: string, _def: ViewDefinition): Record<string, any> {
+        const readonlyError = () => {
+            throw new Error(`"${viewName}" is a read-only view.`);
+        };
+
+        return {
+            insert: readonlyError,
+            insertMany: readonlyError,
+            update: readonlyError,
+            upsert: readonlyError,
+            upsertMany: readonlyError,
+            findOrCreate: readonlyError,
+            delete: readonlyError,
+            restore: readonlyError,
+            select: (...cols: string[]) => createQueryBuilder(this._ctx, viewName, cols),
+            count: () => this._m(`${viewName}.count`, () => {
+                const row = this._stmt(`SELECT COUNT(*) as count FROM "${viewName}"`).get() as any;
+                return row?.count ?? 0;
+            }),
+            on: readonlyError,
+            _tableName: viewName,
+            _isView: true,
+        };
+    }
+
+    private normalizeViewSelect(sql: string): string {
+        return sql.trim().replace(/;+\s*$/, '');
+    }
+
+    private normalizeSql(sql: string): string {
+        return sql.replace(/\s+/g, ' ').trim().toLowerCase();
     }
 
     // =========================================================================
@@ -446,6 +520,11 @@ class _Database<Schemas extends SchemaMap> {
         return Object.keys(this.schemas);
     }
 
+    /** Return the list of registered view names. */
+    public views(): string[] {
+        return Object.keys(this.viewDefinitions);
+    }
+
     /** Return column info for a table via PRAGMA table_info. */
     public columns(tableName: string): { name: string; type: string; notnull: number; pk: number }[] {
         return this.db.query(`PRAGMA table_info("${tableName}")`).all() as any[];
@@ -562,11 +641,23 @@ class _Database<Schemas extends SchemaMap> {
 // Public Export
 // =============================================================================
 
-const Database = _Database as unknown as new <S extends SchemaMap, const R extends RelationsConfig = {}>(
-    dbFile: string, schemas: S, options?: DatabaseOptions<R>
-) => _Database<S> & TypedNavAccessors<S, R>;
+type ViewSchemas<V extends ViewDefinitions> = {
+    [K in keyof V]: V[K] extends ViewDefinition<infer T> ? T : never;
+};
 
-type Database<S extends SchemaMap, R extends RelationsConfig = {}> = _Database<S> & TypedNavAccessors<S, R>;
+type Database<
+    S extends SchemaMap,
+    R extends RelationsConfig = {},
+    V extends ViewDefinitions = {},
+> = _Database<S> & TypedNavAccessors<S, R> & TypedReadonlyAccessors<ViewSchemas<V>>;
+
+const Database = _Database as unknown as new <
+    S extends SchemaMap,
+    const R extends RelationsConfig = {},
+    const V extends ViewDefinitions = {},
+>(
+    dbFile: string, schemas: S, options?: DatabaseOptions<R, V>
+) => Database<S, R, V>;
 
 export { Database };
 export type { Database as DatabaseType };

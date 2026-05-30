@@ -11,7 +11,9 @@ export type {
     EntityAccessor, TypedAccessors, AugmentedEntity, UpdateBuilder, DeleteBuilder,
     InferSchema, EntityData, IndexDef, ChangeEvent,
     ProxyColumns, ColumnRef,
+    ViewDefinition, ViewDefinitions, ReadonlyEntity, ReadonlyEntityAccessor, TypedReadonlyAccessors,
 } from './types';
+export { defineView } from './types';
 
 export { z } from 'zod';
 
