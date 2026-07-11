@@ -4,277 +4,371 @@
  * Each function accepts a `DatabaseContext` so it can access
  * the db handle, schemas, and entity methods without tight coupling.
  */
-import type { AugmentedEntity, UpdateBuilder, DeleteBuilder } from './types';
-import { asZodObject } from './types';
-import { transformForStorage, transformFromStorage } from './schema';
-import type { DatabaseContext } from './context';
+import type { AugmentedEntity, UpdateBuilder, DeleteBuilder } from "./types";
+import { asZodObject } from "./types";
+import { transformForStorage, transformFromStorage } from "./schema";
+import type { DatabaseContext } from "./context";
 
 // ---------------------------------------------------------------------------
 // Read helpers
 // ---------------------------------------------------------------------------
 
-export function getById(ctx: DatabaseContext, entityName: string, id: number): AugmentedEntity<any> | null {
-    const row = ctx._stmt(`SELECT * FROM "${entityName}" WHERE id = ?`).get(id) as any;
-    if (!row) return null;
-    return ctx.attachMethods(entityName, transformFromStorage(row, ctx.schemas[entityName]!));
+export function getById(
+  ctx: DatabaseContext,
+  entityName: string,
+  id: number,
+): AugmentedEntity<any> | null {
+  const row = ctx
+    ._stmt(`SELECT * FROM "${entityName}" WHERE id = ?`)
+    .get(id) as any;
+  if (!row) return null;
+  return ctx.attachMethods(
+    entityName,
+    transformFromStorage(row, ctx.schemas[entityName]!),
+  );
 }
 
-export function getOne(ctx: DatabaseContext, entityName: string, conditions: Record<string, any>): AugmentedEntity<any> | null {
-    const { clause, values } = ctx.buildWhereClause(conditions);
-    const row = ctx._stmt(`SELECT * FROM "${entityName}" ${clause} LIMIT 1`).get(...values) as any;
-    if (!row) return null;
-    return ctx.attachMethods(entityName, transformFromStorage(row, ctx.schemas[entityName]!));
+export function getOne(
+  ctx: DatabaseContext,
+  entityName: string,
+  conditions: Record<string, any>,
+): AugmentedEntity<any> | null {
+  const { clause, values } = ctx.buildWhereClause(conditions);
+  const row = ctx
+    ._stmt(`SELECT * FROM "${entityName}" ${clause} LIMIT 1`)
+    .get(...values) as any;
+  if (!row) return null;
+  return ctx.attachMethods(
+    entityName,
+    transformFromStorage(row, ctx.schemas[entityName]!),
+  );
 }
 
-export function findMany(ctx: DatabaseContext, entityName: string, conditions: Record<string, any> = {}): AugmentedEntity<any>[] {
-    const { clause, values } = ctx.buildWhereClause(conditions);
-    const rows = ctx._stmt(`SELECT * FROM "${entityName}" ${clause}`).all(...values);
-    return rows.map((row: any) =>
-        ctx.attachMethods(entityName, transformFromStorage(row, ctx.schemas[entityName]!))
-    );
+export function findMany(
+  ctx: DatabaseContext,
+  entityName: string,
+  conditions: Record<string, any> = {},
+): AugmentedEntity<any>[] {
+  const { clause, values } = ctx.buildWhereClause(conditions);
+  const rows = ctx
+    ._stmt(`SELECT * FROM "${entityName}" ${clause}`)
+    .all(...values);
+  return rows.map((row: any) =>
+    ctx.attachMethods(
+      entityName,
+      transformFromStorage(row, ctx.schemas[entityName]!),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Write operations
 // ---------------------------------------------------------------------------
 
-export function insert<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, data: Omit<T, 'id'>): AugmentedEntity<any> {
-    const schema = ctx.schemas[entityName]!;
-    let inputData = { ...data } as Record<string, any>;
+export function insert<T extends Record<string, any>>(
+  ctx: DatabaseContext,
+  entityName: string,
+  data: Omit<T, "id">,
+): AugmentedEntity<any> {
+  const schema = ctx.schemas[entityName]!;
+  let inputData = { ...data } as Record<string, any>;
 
-    // beforeInsert hook — can transform data
-    const hooks = ctx.hooks[entityName];
-    if (hooks?.beforeInsert) {
-        const result = hooks.beforeInsert(inputData);
-        if (result) inputData = result;
-    }
+  // beforeInsert hook — can transform data
+  const hooks = ctx.hooks[entityName];
+  if (hooks?.beforeInsert) {
+    const result = hooks.beforeInsert(inputData);
+    if (result) inputData = result;
+  }
 
-    const validatedData = asZodObject(schema).passthrough().parse(inputData);
-    const transformed = transformForStorage(validatedData);
+  const validatedData = asZodObject(schema).passthrough().parse(inputData);
+  const transformed = transformForStorage(validatedData);
 
-    // Auto-inject timestamps
-    if (ctx.timestamps) {
-        const now = new Date().toISOString();
-        transformed.createdAt = now;
-        transformed.updatedAt = now;
-    }
+  // Auto-inject timestamps
+  if (ctx.timestamps) {
+    const now = new Date().toISOString();
+    transformed.createdAt = now;
+    transformed.updatedAt = now;
+  }
 
-    const columns = Object.keys(transformed);
+  const columns = Object.keys(transformed);
 
-    const quotedCols = columns.map(c => `"${c}"`);
-    const sql = columns.length === 0
-        ? `INSERT INTO "${entityName}" DEFAULT VALUES`
-        : `INSERT INTO "${entityName}" (${quotedCols.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
+  const quotedCols = columns.map((c) => `"${c}"`);
+  const sql =
+    columns.length === 0
+      ? `INSERT INTO "${entityName}" DEFAULT VALUES`
+      : `INSERT INTO "${entityName}" (${quotedCols.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
 
-    let lastId = 0;
-    ctx._m(`SQL: ${sql.slice(0, 40)}`, () => {
-        const result = ctx._stmt(sql).run(...Object.values(transformed));
-        lastId = result.lastInsertRowid as number;
-    });
-    const newEntity = getById(ctx, entityName, lastId);
-    if (!newEntity) throw new Error('Failed to retrieve entity after insertion');
+  let lastId = 0;
+  ctx._m(`SQL: ${sql.slice(0, 40)}`, () => {
+    const result = ctx._stmt(sql).run(...Object.values(transformed));
+    lastId = result.lastInsertRowid as number;
+  });
+  const newEntity = getById(ctx, entityName, lastId);
+  if (!newEntity) throw new Error("Failed to retrieve entity after insertion");
 
-    // afterInsert hook
-    if (hooks?.afterInsert) hooks.afterInsert(newEntity);
+  // afterInsert hook
+  if (hooks?.afterInsert) hooks.afterInsert(newEntity);
 
-    return newEntity;
+  return newEntity;
 }
 
-export function update<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, id: number, data: Partial<Omit<T, 'id'>>): AugmentedEntity<any> | null {
-    const schema = ctx.schemas[entityName]!;
-    let inputData = { ...data } as Record<string, any>;
+export function update<T extends Record<string, any>>(
+  ctx: DatabaseContext,
+  entityName: string,
+  id: number,
+  data: Partial<Omit<T, "id">>,
+): AugmentedEntity<any> | null {
+  const schema = ctx.schemas[entityName]!;
+  let inputData = { ...data } as Record<string, any>;
 
-    // beforeUpdate hook — can transform data
-    const hooks = ctx.hooks[entityName];
-    if (hooks?.beforeUpdate) {
-        const result = hooks.beforeUpdate(inputData, id);
-        if (result) inputData = result;
-    }
+  // beforeUpdate hook — can transform data
+  const hooks = ctx.hooks[entityName];
+  if (hooks?.beforeUpdate) {
+    const result = hooks.beforeUpdate(inputData, id);
+    if (result) inputData = result;
+  }
 
-    const validatedData = asZodObject(schema).partial().parse(inputData);
-    const transformed = transformForStorage(validatedData);
-    if (Object.keys(transformed).length === 0 && !ctx.timestamps) return getById(ctx, entityName, id);
+  const validatedData = asZodObject(schema).partial().parse(inputData);
+  const transformed = transformForStorage(validatedData);
+  if (Object.keys(transformed).length === 0 && !ctx.timestamps)
+    return getById(ctx, entityName, id);
 
-    // Auto-update timestamp
-    if (ctx.timestamps) {
-        transformed.updatedAt = new Date().toISOString();
-    }
+  // Auto-update timestamp
+  if (ctx.timestamps) {
+    transformed.updatedAt = new Date().toISOString();
+  }
 
-    const setClause = Object.keys(transformed).map(key => `"${key}" = ?`).join(', ');
-    const sql = `UPDATE "${entityName}" SET ${setClause} WHERE id = ?`;
-    ctx._m(`SQL: UPDATE ${entityName} SET ...`, () => {
-        ctx._stmt(sql).run(...Object.values(transformed), id);
-    });
+  const setClause = Object.keys(transformed)
+    .map((key) => `"${key}" = ?`)
+    .join(", ");
+  const sql = `UPDATE "${entityName}" SET ${setClause} WHERE id = ?`;
+  ctx._m(`SQL: UPDATE ${entityName} SET ...`, () => {
+    ctx._stmt(sql).run(...Object.values(transformed), id);
+  });
 
-    const updated = getById(ctx, entityName, id);
+  const updated = getById(ctx, entityName, id);
 
-    // afterUpdate hook
-    if (hooks?.afterUpdate && updated) hooks.afterUpdate(updated);
+  // afterUpdate hook
+  if (hooks?.afterUpdate && updated) hooks.afterUpdate(updated);
 
-    return updated;
+  return updated;
 }
 
-export function updateWhere(ctx: DatabaseContext, entityName: string, data: Record<string, any>, conditions: Record<string, any>): number {
-    const schema = ctx.schemas[entityName]!;
-    const validatedData = asZodObject(schema).partial().parse(data);
-    const transformed = transformForStorage(validatedData);
-    if (Object.keys(transformed).length === 0) return 0;
+export function updateWhere(
+  ctx: DatabaseContext,
+  entityName: string,
+  data: Record<string, any>,
+  conditions: Record<string, any>,
+): number {
+  const schema = ctx.schemas[entityName]!;
+  const validatedData = asZodObject(schema).partial().parse(data);
+  const transformed = transformForStorage(validatedData);
+  if (Object.keys(transformed).length === 0) return 0;
 
-    const { clause, values: whereValues } = ctx.buildWhereClause(conditions);
-    if (!clause) throw new Error('update().where() requires at least one condition');
+  const { clause, values: whereValues } = ctx.buildWhereClause(conditions);
+  if (!clause)
+    throw new Error("update().where() requires at least one condition");
 
-    const setCols = Object.keys(transformed);
-    const setClause = setCols.map(key => `"${key}" = ?`).join(', ');
-    const result = ctx._stmt(`UPDATE "${entityName}" SET ${setClause} ${clause}`).run(
-        ...setCols.map(key => transformed[key]),
-        ...whereValues
-    );
+  const setCols = Object.keys(transformed);
+  const setClause = setCols.map((key) => `"${key}" = ?`).join(", ");
+  const result = ctx
+    ._stmt(`UPDATE "${entityName}" SET ${setClause} ${clause}`)
+    .run(...setCols.map((key) => transformed[key]), ...whereValues);
 
-    return (result as any).changes ?? 0;
+  return (result as any).changes ?? 0;
 }
 
-export function createUpdateBuilder(ctx: DatabaseContext, entityName: string, data: Record<string, any>): UpdateBuilder<any> {
-    let _conditions: Record<string, any> = {};
-    const builder: UpdateBuilder<any> = {
-        where: (conditions) => { _conditions = { ..._conditions, ...conditions }; return builder; },
-        exec: () => updateWhere(ctx, entityName, data, _conditions),
-    };
-    return builder;
+export function createUpdateBuilder(
+  ctx: DatabaseContext,
+  entityName: string,
+  data: Record<string, any>,
+): UpdateBuilder<any> {
+  let _conditions: Record<string, any> = {};
+  const builder: UpdateBuilder<any> = {
+    where: (conditions) => {
+      _conditions = { ..._conditions, ...conditions };
+      return builder;
+    },
+    exec: () => updateWhere(ctx, entityName, data, _conditions),
+  };
+  return builder;
 }
 
-export function upsert<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, data: any, conditions: any = {}): AugmentedEntity<any> {
-    const hasId = data?.id && typeof data.id === 'number';
-    const existing = hasId
-        ? getById(ctx, entityName, data.id)
-        : Object.keys(conditions ?? {}).length > 0
-            ? getOne(ctx, entityName, conditions)
-            : null;
+export function upsert<T extends Record<string, any>>(
+  ctx: DatabaseContext,
+  entityName: string,
+  data: any,
+  conditions: any = {},
+): AugmentedEntity<any> {
+  const hasId = data?.id && typeof data.id === "number";
+  const existing = hasId
+    ? getById(ctx, entityName, data.id)
+    : Object.keys(conditions ?? {}).length > 0
+      ? getOne(ctx, entityName, conditions)
+      : null;
 
-    if (existing) {
-        const updateData = { ...data };
-        delete updateData.id;
-        return update(ctx, entityName, existing.id, updateData) as AugmentedEntity<any>;
-    }
-    const insertData = { ...(conditions ?? {}), ...(data ?? {}) };
-    delete insertData.id;
-    return insert(ctx, entityName, insertData);
+  if (existing) {
+    const updateData = { ...data };
+    delete updateData.id;
+    return update(
+      ctx,
+      entityName,
+      existing.id,
+      updateData,
+    ) as AugmentedEntity<any>;
+  }
+  const insertData = { ...(conditions ?? {}), ...(data ?? {}) };
+  delete insertData.id;
+  return insert(ctx, entityName, insertData);
 }
 
 /** Find a row matching conditions, or create it with the merged data. Returns { entity, created }. */
 export function findOrCreate<T extends Record<string, any>>(
-    ctx: DatabaseContext, entityName: string,
-    conditions: Record<string, any>,
-    defaults: Record<string, any> = {},
+  ctx: DatabaseContext,
+  entityName: string,
+  conditions: Record<string, any>,
+  defaults: Record<string, any> = {},
 ): { entity: AugmentedEntity<any>; created: boolean } {
-    const existing = getOne(ctx, entityName, conditions);
-    if (existing) return { entity: existing, created: false };
-    const data = { ...conditions, ...defaults };
-    delete (data as any).id;
-    return { entity: insert(ctx, entityName, data), created: true };
+  const existing = getOne(ctx, entityName, conditions);
+  if (existing) return { entity: existing, created: false };
+  const data = { ...conditions, ...defaults };
+  delete (data as any).id;
+  return { entity: insert(ctx, entityName, data), created: true };
 }
 
-export function deleteEntity(ctx: DatabaseContext, entityName: string, id: number): void {
-    // beforeDelete hook — return false to cancel
-    const hooks = ctx.hooks[entityName];
-    if (hooks?.beforeDelete) {
-        const result = hooks.beforeDelete(id);
-        if (result === false) return;
-    }
+export function deleteEntity(
+  ctx: DatabaseContext,
+  entityName: string,
+  id: number,
+): void {
+  // beforeDelete hook — return false to cancel
+  const hooks = ctx.hooks[entityName];
+  if (hooks?.beforeDelete) {
+    const result = hooks.beforeDelete(id);
+    if (result === false) return;
+  }
 
-    ctx._stmt(`DELETE FROM "${entityName}" WHERE id = ?`).run(id);
+  ctx._stmt(`DELETE FROM "${entityName}" WHERE id = ?`).run(id);
 
-    // afterDelete hook
-    if (hooks?.afterDelete) hooks.afterDelete(id);
+  // afterDelete hook
+  if (hooks?.afterDelete) hooks.afterDelete(id);
 }
 
 /** Delete all rows matching the given conditions. Returns the number of rows affected. */
-export function deleteWhere(ctx: DatabaseContext, entityName: string, conditions: Record<string, any>): number {
-    const { clause, values } = ctx.buildWhereClause(conditions);
-    if (!clause) throw new Error('delete().where() requires at least one condition');
+export function deleteWhere(
+  ctx: DatabaseContext,
+  entityName: string,
+  conditions: Record<string, any>,
+): number {
+  const { clause, values } = ctx.buildWhereClause(conditions);
+  if (!clause)
+    throw new Error("delete().where() requires at least one condition");
 
-    if (ctx.softDeletes) {
-        // Soft delete: set deletedAt instead of removing rows
-        const now = new Date().toISOString();
-        const sql = `UPDATE "${entityName}" SET "deletedAt" = ? ${clause}`;
-        const result = ctx._m(`SQL: ${sql.slice(0, 50)}`, () => ctx._stmt(sql).run(now, ...values));
-        return (result as any).changes ?? 0;
-    }
-
-    const sql = `DELETE FROM "${entityName}" ${clause}`;
-    const result = ctx._m(`SQL: ${sql.slice(0, 50)}`, () => ctx._stmt(sql).run(...values));
+  if (ctx.softDeletes) {
+    // Soft delete: set deletedAt instead of removing rows
+    const now = new Date().toISOString();
+    const sql = `UPDATE "${entityName}" SET "deletedAt" = ? ${clause}`;
+    const result = ctx._m(`SQL: ${sql.slice(0, 50)}`, () =>
+      ctx._stmt(sql).run(now, ...values),
+    );
     return (result as any).changes ?? 0;
+  }
+
+  const sql = `DELETE FROM "${entityName}" ${clause}`;
+  const result = ctx._m(`SQL: ${sql.slice(0, 50)}`, () =>
+    ctx._stmt(sql).run(...values),
+  );
+  return (result as any).changes ?? 0;
 }
 
 /** Create a fluent delete builder: db.table.delete().where({...}).exec() */
-export function createDeleteBuilder(ctx: DatabaseContext, entityName: string): DeleteBuilder<any> {
-    let _conditions: Record<string, any> = {};
-    const builder: DeleteBuilder<any> = {
-        where: (conditions) => { _conditions = { ..._conditions, ...conditions }; return builder; },
-        exec: () => deleteWhere(ctx, entityName, _conditions),
-    };
-    return builder;
+export function createDeleteBuilder(
+  ctx: DatabaseContext,
+  entityName: string,
+): DeleteBuilder<any> {
+  let _conditions: Record<string, any> = {};
+  const builder: DeleteBuilder<any> = {
+    where: (conditions) => {
+      _conditions = { ..._conditions, ...conditions };
+      return builder;
+    },
+    exec: () => deleteWhere(ctx, entityName, _conditions),
+  };
+  return builder;
 }
 
 /** Insert multiple rows in a single transaction for better performance. */
-export function insertMany<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, rows: Omit<T, 'id'>[]): AugmentedEntity<any>[] {
-    if (rows.length === 0) return [];
-    const schema = ctx.schemas[entityName]!;
-    const zodSchema = asZodObject(schema).passthrough();
-    const hooks = ctx.hooks[entityName];
+export function insertMany<T extends Record<string, any>>(
+  ctx: DatabaseContext,
+  entityName: string,
+  rows: Omit<T, "id">[],
+): AugmentedEntity<any>[] {
+  if (rows.length === 0) return [];
+  const schema = ctx.schemas[entityName]!;
+  const zodSchema = asZodObject(schema).passthrough();
+  const hooks = ctx.hooks[entityName];
 
-    const txn = ctx.db.transaction(() => {
-        const ids: number[] = [];
-        for (let data of rows) {
-            let inputData = { ...data } as Record<string, any>;
+  const txn = ctx.db.transaction(() => {
+    const ids: number[] = [];
+    for (let data of rows) {
+      let inputData = { ...data } as Record<string, any>;
 
-            // beforeInsert hook
-            if (hooks?.beforeInsert) {
-                const result = hooks.beforeInsert(inputData);
-                if (result) inputData = result;
-            }
+      // beforeInsert hook
+      if (hooks?.beforeInsert) {
+        const result = hooks.beforeInsert(inputData);
+        if (result) inputData = result;
+      }
 
-            const validatedData = zodSchema.parse(inputData);
-            const transformed = transformForStorage(validatedData);
+      const validatedData = zodSchema.parse(inputData);
+      const transformed = transformForStorage(validatedData);
 
-            if (ctx.timestamps) {
-                const now = new Date().toISOString();
-                transformed.createdAt = now;
-                transformed.updatedAt = now;
-            }
+      if (ctx.timestamps) {
+        const now = new Date().toISOString();
+        transformed.createdAt = now;
+        transformed.updatedAt = now;
+      }
 
-            const columns = Object.keys(transformed);
-            const quotedCols = columns.map(c => `"${c}"`);
-            const sql = columns.length === 0
-                ? `INSERT INTO "${entityName}" DEFAULT VALUES`
-                : `INSERT INTO "${entityName}" (${quotedCols.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
-            const result = ctx._stmt(sql).run(...Object.values(transformed));
-            ids.push(result.lastInsertRowid as number);
-        }
-        return ids;
-    });
-
-    const ids = txn();
-    const entities = ids.map((id: number) => getById(ctx, entityName, id)!).filter(Boolean);
-
-    // afterInsert hooks
-    if (hooks?.afterInsert) {
-        for (const entity of entities) hooks.afterInsert(entity);
+      const columns = Object.keys(transformed);
+      const quotedCols = columns.map((c) => `"${c}"`);
+      const sql =
+        columns.length === 0
+          ? `INSERT INTO "${entityName}" DEFAULT VALUES`
+          : `INSERT INTO "${entityName}" (${quotedCols.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+      const result = ctx._stmt(sql).run(...Object.values(transformed));
+      ids.push(result.lastInsertRowid as number);
     }
+    return ids;
+  });
 
-    return entities;
+  const ids = txn();
+  const entities = ids
+    .map((id: number) => getById(ctx, entityName, id)!)
+    .filter(Boolean);
+
+  // afterInsert hooks
+  if (hooks?.afterInsert) {
+    for (const entity of entities) hooks.afterInsert(entity);
+  }
+
+  return entities;
 }
 
 /** Upsert multiple rows in a single transaction. */
-export function upsertMany<T extends Record<string, any>>(ctx: DatabaseContext, entityName: string, rows: any[], conditions: Record<string, any> = {}): AugmentedEntity<any>[] {
-    if (rows.length === 0) return [];
+export function upsertMany<T extends Record<string, any>>(
+  ctx: DatabaseContext,
+  entityName: string,
+  rows: any[],
+  conditions: Record<string, any> = {},
+): AugmentedEntity<any>[] {
+  if (rows.length === 0) return [];
 
-    const txn = ctx.db.transaction(() => {
-        const results: AugmentedEntity<any>[] = [];
-        for (const data of rows) {
-            results.push(upsert(ctx, entityName, data, conditions));
-        }
-        return results;
-    });
+  const txn = ctx.db.transaction(() => {
+    const results: AugmentedEntity<any>[] = [];
+    for (const data of rows) {
+      results.push(upsert(ctx, entityName, data, conditions));
+    }
+    return results;
+  });
 
-    return txn();
+  return txn();
 }

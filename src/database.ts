@@ -5,637 +5,812 @@
  * and delegates CRUD, entity augmentation, and query building to
  * focused modules.
  */
-import { Database as SqliteDatabase } from 'bun:sqlite';
-import { createMeasure } from 'measure-fn';
-import { z } from 'zod';
-import { QueryBuilder, executeProxyQuery, createQueryBuilder, type ProxyQueryResult } from './query';
+import { Database as SqliteDatabase } from "bun:sqlite";
+import { createMeasure } from "measure-fn";
+import { z } from "zod";
+import {
+  QueryBuilder,
+  executeProxyQuery,
+  createQueryBuilder,
+  type ProxyQueryResult,
+} from "./query";
 import type {
-    SchemaMap, DatabaseOptions, Relationship, RelationsConfig,
-    EntityAccessor, TypedAccessors, TypedNavAccessors, AugmentedEntity, UpdateBuilder,
-    ProxyColumns, InferSchema, ChangeEvent, ViewDefinitions, ViewDefinition,
-    TypedReadonlyAccessors,
-} from './types';
-import { asZodObject } from './types';
+  SchemaMap,
+  DatabaseOptions,
+  Relationship,
+  RelationsConfig,
+  EntityAccessor,
+  TypedAccessors,
+  TypedNavAccessors,
+  AugmentedEntity,
+  UpdateBuilder,
+  ProxyColumns,
+  InferSchema,
+  ChangeEvent,
+  ViewDefinitions,
+  ViewDefinition,
+  TypedReadonlyAccessors,
+} from "./types";
+import { asZodObject } from "./types";
 import {
-    parseRelationsConfig,
-    getStorableFields,
-    zodTypeToSqlType,
-} from './schema';
-import { transformFromStorage } from './schema';
-import type { DatabaseContext } from './context';
-import { buildWhereClause } from './helpers';
-import { attachMethods } from './entity';
+  parseRelationsConfig,
+  getStorableFields,
+  zodTypeToSqlType,
+} from "./schema";
+import { transformFromStorage } from "./schema";
+import type { DatabaseContext } from "./context";
+import { buildWhereClause } from "./helpers";
+import { attachMethods } from "./entity";
 import {
-    insert, insertMany, update, upsert, upsertMany, findOrCreate, deleteEntity, createDeleteBuilder,
-    getById, getOne, findMany, updateWhere, createUpdateBuilder,
-} from './crud';
+  insert,
+  insertMany,
+  update,
+  upsert,
+  upsertMany,
+  findOrCreate,
+  deleteEntity,
+  createDeleteBuilder,
+  getById,
+  getOne,
+  findMany,
+  updateWhere,
+  createUpdateBuilder,
+} from "./crud";
 
 // =============================================================================
 // Database Class
 // =============================================================================
 
 type Listener = {
-    table: string;
-    event: ChangeEvent;
-    callback: (row: any) => void | Promise<void>;
+  table: string;
+  event: ChangeEvent;
+  callback: (row: any) => void | Promise<void>;
 };
 
 class _Database<Schemas extends SchemaMap> {
-    private db: SqliteDatabase;
-    private _reactive: boolean;
-    private _timestamps: boolean;
-    private _softDeletes: boolean;
-    private _debug: boolean;
-    private schemas: Schemas;
-    private allSchemas: SchemaMap;
-    private viewDefinitions: ViewDefinitions;
-    private relationships: Relationship[];
-    private options: DatabaseOptions<any, any>;
+  private db: SqliteDatabase;
+  private _reactive: boolean;
+  private _timestamps: boolean;
+  private _softDeletes: boolean;
+  private _debug: boolean;
+  private schemas: Schemas;
+  private allSchemas: SchemaMap;
+  private viewDefinitions: ViewDefinitions;
+  private relationships: Relationship[];
+  private options: DatabaseOptions<any, any>;
 
-    /** Shared context for extracted modules. */
-    private _ctx: DatabaseContext;
+  /** Shared context for extracted modules. */
+  private _ctx: DatabaseContext;
 
-    /** Registered change listeners. */
-    private _listeners: Listener[] = [];
+  /** Registered change listeners. */
+  private _listeners: Listener[] = [];
 
-    /** Watermark: last processed change id from _changes table. */
-    private _changeWatermark: number = 0;
+  /** Watermark: last processed change id from _changes table. */
+  private _changeWatermark: number = 0;
 
-    /** Global poll timer (single loop for all listeners). */
-    private _pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Global poll timer (single loop for all listeners). */
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    /** Poll interval in ms. */
-    private _pollInterval: number;
+  /** Poll interval in ms. */
+  private _pollInterval: number;
 
-    /** Scoped measure-fn instance for instrumentation. */
-    private _measure: ReturnType<typeof createMeasure>;
+  /** Scoped measure-fn instance for instrumentation. */
+  private _measure: ReturnType<typeof createMeasure>;
 
-    /** Prepared statement cache — avoids re-compiling identical SQL. */
-    private _stmtCache = new Map<string, ReturnType<SqliteDatabase['query']>>();
+  /** Prepared statement cache — avoids re-compiling identical SQL. */
+  private _stmtCache = new Map<string, ReturnType<SqliteDatabase["query"]>>();
 
-    /** Get or create a cached prepared statement. */
-    private _stmt(sql: string): ReturnType<SqliteDatabase['query']> {
-        let stmt = this._stmtCache.get(sql);
-        if (!stmt) {
-            stmt = this.db.query(sql);
-            this._stmtCache.set(sql, stmt);
-        }
-        return stmt;
+  /** Get or create a cached prepared statement. */
+  private _stmt(sql: string): ReturnType<SqliteDatabase["query"]> {
+    let stmt = this._stmtCache.get(sql);
+    if (!stmt) {
+      stmt = this.db.query(sql);
+      this._stmtCache.set(sql, stmt);
     }
+    return stmt;
+  }
 
-    /**
-     * Conditional measurement helper — wraps with measure-fn only when debug is on.
-     * When debug is off, executes fn directly with zero overhead.
-     */
-    private _m<T>(label: string, fn: () => T): T {
-        if (this._debug) return this._measure.measureSync.assert(label, fn);
-        return fn();
-    }
+  /**
+   * Conditional measurement helper — wraps with measure-fn only when debug is on.
+   * When debug is off, executes fn directly with zero overhead.
+   */
+  private _m<T>(label: string, fn: () => T): T {
+    if (this._debug) return this._measure.measureSync.assert(label, fn);
+    return fn();
+  }
 
-    constructor(dbFile: string, schemas: Schemas, options: DatabaseOptions<any, any> = {}) {
-        this._debug = options.debug === true;
-        this._measure = createMeasure('satidb');
+  constructor(
+    dbFile: string,
+    schemas: Schemas,
+    options: DatabaseOptions<any, any> = {},
+  ) {
+    this._debug = options.debug === true;
+    this._measure = createMeasure("satidb");
 
-        this.db = new SqliteDatabase(dbFile);
-        if (options.wal !== false) this.db.run('PRAGMA journal_mode = WAL');
-        this.db.run('PRAGMA foreign_keys = ON');
-        this.schemas = schemas;
-        this.viewDefinitions = options.views ?? {};
-        this.allSchemas = {
-            ...this.schemas,
-            ...Object.fromEntries(
-                Object.entries(this.viewDefinitions).map(([viewName, def]) => [viewName, def.schema])
-            ),
-        };
-        this.options = options;
-        this._reactive = options.reactive !== false; // default true
-        this._timestamps = options.timestamps === true;
-        this._softDeletes = options.softDeletes === true;
-        this._pollInterval = options.pollInterval ?? 100;
-        this.relationships = options.relations ? parseRelationsConfig(options.relations, this.allSchemas) : [];
+    this.db = new SqliteDatabase(dbFile);
+    if (options.wal !== false) this.db.run("PRAGMA journal_mode = WAL");
+    this.db.run("PRAGMA foreign_keys = ON");
+    this.schemas = schemas;
+    this.viewDefinitions = options.views ?? {};
+    this.allSchemas = {
+      ...this.schemas,
+      ...Object.fromEntries(
+        Object.entries(this.viewDefinitions).map(([viewName, def]) => [
+          viewName,
+          def.schema,
+        ]),
+      ),
+    };
+    this.options = options;
+    this._reactive = options.reactive !== false; // default true
+    this._timestamps = options.timestamps === true;
+    this._softDeletes = options.softDeletes === true;
+    this._pollInterval = options.pollInterval ?? 100;
+    this.relationships = options.relations
+      ? parseRelationsConfig(options.relations, this.allSchemas)
+      : [];
 
-        // Build the context that extracted modules use
-        this._ctx = {
-            db: this.db,
-            schemas: this.allSchemas,
-            relationships: this.relationships,
-            viewNames: new Set(Object.keys(this.viewDefinitions)),
-            attachMethods: (name, entity) => attachMethods(this._ctx, name, entity),
-            buildWhereClause: (conds, prefix) => buildWhereClause(conds, prefix),
-            debug: this._debug,
-            timestamps: this._timestamps,
-            softDeletes: this._softDeletes,
-            hooks: options.hooks ?? {},
-            computed: options.computed ?? {},
-            cascade: options.cascade ?? {},
-            _m: <T>(label: string, fn: () => T): T => this._m(label, fn),
-            _stmt: (sql: string) => this._stmt(sql),
-        };
+    // Build the context that extracted modules use
+    this._ctx = {
+      db: this.db,
+      schemas: this.allSchemas,
+      relationships: this.relationships,
+      viewNames: new Set(Object.keys(this.viewDefinitions)),
+      attachMethods: (name, entity) => attachMethods(this._ctx, name, entity),
+      buildWhereClause: (conds, prefix) => buildWhereClause(conds, prefix),
+      debug: this._debug,
+      timestamps: this._timestamps,
+      softDeletes: this._softDeletes,
+      hooks: options.hooks ?? {},
+      computed: options.computed ?? {},
+      cascade: options.cascade ?? {},
+      _m: <T>(label: string, fn: () => T): T => this._m(label, fn),
+      _stmt: (sql: string) => this._stmt(sql),
+    };
 
-        this._m('Init tables', () => this.initializeTables());
-        if (this._reactive) this._m('Change tracking', () => this.initializeChangeTracking());
-        this._m('Run migrations', () => this.runMigrations());
-        if (options.indexes) this._m('Create indexes', () => this.createIndexes(options.indexes!));
-        if (options.unique) this._m('Unique constraints', () => this.createUniqueConstraints(options.unique!));
-        if (options.views) this._m('Create views', () => this.createOrUpdateViews(options.views!));
+    this._m("Init tables", () => this.initializeTables());
+    if (this._reactive)
+      this._m("Change tracking", () => this.initializeChangeTracking());
+    this._m("Run migrations", () => this.runMigrations());
+    if (options.indexes)
+      this._m("Create indexes", () => this.createIndexes(options.indexes!));
+    if (options.unique)
+      this._m("Unique constraints", () =>
+        this.createUniqueConstraints(options.unique!),
+      );
+    if (options.views)
+      this._m("Create views", () => this.createOrUpdateViews(options.views!));
 
-        // Create typed entity accessors (db.users, db.posts, etc.)
-        for (const entityName of Object.keys(schemas)) {
-            const key = entityName as keyof Schemas;
-            const accessor: EntityAccessor<Schemas[typeof key]> = {
-                get: (id: number) => this._m(`${entityName}.get`, () => getById(this._ctx, entityName, id)),
-                insert: (data) => this._m(`${entityName}.insert`, () => insert(this._ctx, entityName, data)),
-                insertMany: (rows: any[]) => this._m(`${entityName}.insertMany(${rows.length})`, () => insertMany(this._ctx, entityName, rows)),
-                update: (idOrData: any, data?: any) => {
-                    if (typeof idOrData === 'number') return this._m(`${entityName}.update(${idOrData})`, () => update(this._ctx, entityName, idOrData, data));
-                    return createUpdateBuilder(this._ctx, entityName, idOrData);
-                },
-                upsert: (conditions, data) => this._m(`${entityName}.upsert`, () => upsert(this._ctx, entityName, data, conditions)),
-                upsertMany: (rows: any[], conditions?: any) => this._m(`${entityName}.upsertMany(${rows.length})`, () => upsertMany(this._ctx, entityName, rows, conditions)),
-                findOrCreate: (conditions: any, defaults?: any) => this._m(`${entityName}.findOrCreate`, () => findOrCreate(this._ctx, entityName, conditions, defaults)),
-                delete: ((id?: any) => {
-                    if (typeof id === 'number') {
-                        return this._m(`${entityName}.delete(${id})`, () => {
-                            // beforeDelete hook — return false to cancel
-                            const hooks = this._ctx.hooks[entityName];
-                            if (hooks?.beforeDelete) {
-                                const result = hooks.beforeDelete(id);
-                                if (result === false) return;
-                            }
-
-                            // Cascade delete children first
-                            const cascadeTargets = this._ctx.cascade[entityName];
-                            if (cascadeTargets) {
-                                for (const childTable of cascadeTargets) {
-                                    const rel = this._ctx.relationships.find(
-                                        r => r.type === 'belongs-to' && r.from === childTable && r.to === entityName
-                                    );
-                                    if (rel) {
-                                        if (this._softDeletes) {
-                                            const now = new Date().toISOString();
-                                            this._stmt(`UPDATE "${childTable}" SET "deletedAt" = ? WHERE "${rel.foreignKey}" = ?`).run(now, id);
-                                        } else {
-                                            this._stmt(`DELETE FROM "${childTable}" WHERE "${rel.foreignKey}" = ?`).run(id);
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (this._softDeletes) {
-                                const now = new Date().toISOString();
-                                this._stmt(`UPDATE "${entityName}" SET "deletedAt" = ? WHERE id = ?`).run(now, id);
-                                if (hooks?.afterDelete) hooks.afterDelete(id);
-                                return;
-                            }
-                            return deleteEntity(this._ctx, entityName, id);
-                        });
-                    }
-                    return createDeleteBuilder(this._ctx, entityName);
-                }) as any,
-                restore: ((id: number) => {
-                    if (!this._softDeletes) throw new Error('restore() requires softDeletes: true');
-                    this._m(`${entityName}.restore(${id})`, () => {
-                        this._stmt(`UPDATE "${entityName}" SET "deletedAt" = NULL WHERE id = ?`).run(id);
-                    });
-                }) as any,
-                select: (...cols: string[]) => createQueryBuilder(this._ctx, entityName, cols),
-                count: () => this._m(`${entityName}.count`, () => {
-                    const row = this._stmt(`SELECT COUNT(*) as count FROM "${entityName}"${this._softDeletes ? ' WHERE "deletedAt" IS NULL' : ''}`).get() as any;
-                    return row?.count ?? 0;
-                }),
-                on: (event: ChangeEvent, callback: (row: any) => void | Promise<void>) => {
-                    return this._registerListener(entityName, event, callback);
-                },
-                _tableName: entityName,
-            };
-            (this as any)[key] = accessor;
-        }
-
-        for (const [viewName, def] of Object.entries(this.viewDefinitions)) {
-            const key = viewName as keyof typeof this.viewDefinitions;
-            (this as any)[key] = this.createReadonlyAccessor(viewName, def);
-        }
-    }
-
-    // =========================================================================
-    // Table Initialization & Migrations
-    // =========================================================================
-
-    private initializeTables(): void {
-        for (const [entityName, schema] of Object.entries(this.schemas)) {
-            const storableFields = getStorableFields(schema);
-            const columnDefs = storableFields.map(f => `"${f.name}" ${zodTypeToSqlType(f.type)}`);
-
-            // Add timestamp columns
-            if (this._timestamps) {
-                columnDefs.push('"createdAt" TEXT');
-                columnDefs.push('"updatedAt" TEXT');
-            }
-            // Add soft delete column
-            if (this._softDeletes) {
-                columnDefs.push('"deletedAt" TEXT');
-            }
-
-            const constraints: string[] = [];
-
-            const belongsToRels = this.relationships.filter(
-                rel => rel.type === 'belongs-to' && rel.from === entityName
+    // Create typed entity accessors (db.users, db.posts, etc.)
+    for (const entityName of Object.keys(schemas)) {
+      const key = entityName as keyof Schemas;
+      const accessor: EntityAccessor<Schemas[typeof key]> = {
+        get: (id: number) =>
+          this._m(`${entityName}.get`, () =>
+            getById(this._ctx, entityName, id),
+          ),
+        insert: (data) =>
+          this._m(`${entityName}.insert`, () =>
+            insert(this._ctx, entityName, data),
+          ),
+        insertMany: (rows: any[]) =>
+          this._m(`${entityName}.insertMany(${rows.length})`, () =>
+            insertMany(this._ctx, entityName, rows),
+          ),
+        update: (idOrData: any, data?: any) => {
+          if (typeof idOrData === "number")
+            return this._m(`${entityName}.update(${idOrData})`, () =>
+              update(this._ctx, entityName, idOrData, data),
             );
-            for (const rel of belongsToRels) {
-                constraints.push(`FOREIGN KEY ("${rel.foreignKey}") REFERENCES "${rel.to}"(id) ON DELETE SET NULL`);
-            }
+          return createUpdateBuilder(this._ctx, entityName, idOrData);
+        },
+        upsert: (conditions, data) =>
+          this._m(`${entityName}.upsert`, () =>
+            upsert(this._ctx, entityName, data, conditions),
+          ),
+        upsertMany: (rows: any[], conditions?: any) =>
+          this._m(`${entityName}.upsertMany(${rows.length})`, () =>
+            upsertMany(this._ctx, entityName, rows, conditions),
+          ),
+        findOrCreate: (conditions: any, defaults?: any) =>
+          this._m(`${entityName}.findOrCreate`, () =>
+            findOrCreate(this._ctx, entityName, conditions, defaults),
+          ),
+        delete: ((id?: any) => {
+          if (typeof id === "number") {
+            return this._m(`${entityName}.delete(${id})`, () => {
+              // beforeDelete hook — return false to cancel
+              const hooks = this._ctx.hooks[entityName];
+              if (hooks?.beforeDelete) {
+                const result = hooks.beforeDelete(id);
+                if (result === false) return;
+              }
 
-            const allCols = columnDefs.join(', ');
-            const allConstraints = constraints.length > 0 ? ', ' + constraints.join(', ') : '';
-            this.db.run(`CREATE TABLE IF NOT EXISTS "${entityName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${allCols}${allConstraints})`);
-        }
+              // Cascade delete children first
+              const cascadeTargets = this._ctx.cascade[entityName];
+              if (cascadeTargets) {
+                for (const childTable of cascadeTargets) {
+                  const rel = this._ctx.relationships.find(
+                    (r) =>
+                      r.type === "belongs-to" &&
+                      r.from === childTable &&
+                      r.to === entityName,
+                  );
+                  if (rel) {
+                    if (this._softDeletes) {
+                      const now = new Date().toISOString();
+                      this._stmt(
+                        `UPDATE "${childTable}" SET "deletedAt" = ? WHERE "${rel.foreignKey}" = ?`,
+                      ).run(now, id);
+                    } else {
+                      this._stmt(
+                        `DELETE FROM "${childTable}" WHERE "${rel.foreignKey}" = ?`,
+                      ).run(id);
+                    }
+                  }
+                }
+              }
+
+              if (this._softDeletes) {
+                const now = new Date().toISOString();
+                this._stmt(
+                  `UPDATE "${entityName}" SET "deletedAt" = ? WHERE id = ?`,
+                ).run(now, id);
+                if (hooks?.afterDelete) hooks.afterDelete(id);
+                return;
+              }
+              return deleteEntity(this._ctx, entityName, id);
+            });
+          }
+          return createDeleteBuilder(this._ctx, entityName);
+        }) as any,
+        restore: ((id: number) => {
+          if (!this._softDeletes)
+            throw new Error("restore() requires softDeletes: true");
+          this._m(`${entityName}.restore(${id})`, () => {
+            this._stmt(
+              `UPDATE "${entityName}" SET "deletedAt" = NULL WHERE id = ?`,
+            ).run(id);
+          });
+        }) as any,
+        select: (...cols: string[]) =>
+          createQueryBuilder(this._ctx, entityName, cols),
+        count: () =>
+          this._m(`${entityName}.count`, () => {
+            const row = this._stmt(
+              `SELECT COUNT(*) as count FROM "${entityName}"${this._softDeletes ? ' WHERE "deletedAt" IS NULL' : ""}`,
+            ).get() as any;
+            return row?.count ?? 0;
+          }),
+        on: (
+          event: ChangeEvent,
+          callback: (row: any) => void | Promise<void>,
+        ) => {
+          return this._registerListener(entityName, event, callback);
+        },
+        _tableName: entityName,
+      };
+      (this as any)[key] = accessor;
     }
 
-    /**
-     * Initialize per-table change tracking using triggers.
-     *
-     * Creates a `_changes` table that logs every insert/update/delete with
-     * the table name, operation, and affected row id. This enables
-     * row-level change detection for the `on()` API.
-     */
-    private initializeChangeTracking(): void {
-        this.db.run(`CREATE TABLE IF NOT EXISTS "_changes" (
+    for (const [viewName, def] of Object.entries(this.viewDefinitions)) {
+      const key = viewName as keyof typeof this.viewDefinitions;
+      (this as any)[key] = this.createReadonlyAccessor(viewName, def);
+    }
+  }
+
+  // =========================================================================
+  // Table Initialization & Migrations
+  // =========================================================================
+
+  private initializeTables(): void {
+    for (const [entityName, schema] of Object.entries(this.schemas)) {
+      const storableFields = getStorableFields(schema);
+      const columnDefs = storableFields.map(
+        (f) => `"${f.name}" ${zodTypeToSqlType(f.type)}`,
+      );
+
+      // Add timestamp columns
+      if (this._timestamps) {
+        columnDefs.push('"createdAt" TEXT');
+        columnDefs.push('"updatedAt" TEXT');
+      }
+      // Add soft delete column
+      if (this._softDeletes) {
+        columnDefs.push('"deletedAt" TEXT');
+      }
+
+      const constraints: string[] = [];
+
+      const belongsToRels = this.relationships.filter(
+        (rel) => rel.type === "belongs-to" && rel.from === entityName,
+      );
+      for (const rel of belongsToRels) {
+        constraints.push(
+          `FOREIGN KEY ("${rel.foreignKey}") REFERENCES "${rel.to}"(id) ON DELETE SET NULL`,
+        );
+      }
+
+      const allCols = columnDefs.join(", ");
+      const allConstraints =
+        constraints.length > 0 ? ", " + constraints.join(", ") : "";
+      this.db.run(
+        `CREATE TABLE IF NOT EXISTS "${entityName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${allCols}${allConstraints})`,
+      );
+    }
+  }
+
+  /**
+   * Initialize per-table change tracking using triggers.
+   *
+   * Creates a `_changes` table that logs every insert/update/delete with
+   * the table name, operation, and affected row id. This enables
+   * row-level change detection for the `on()` API.
+   */
+  private initializeChangeTracking(): void {
+    this.db.run(`CREATE TABLE IF NOT EXISTS "_changes" (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tbl TEXT NOT NULL,
             op TEXT NOT NULL,
             row_id INTEGER NOT NULL
         )`);
 
-        for (const entityName of Object.keys(this.schemas)) {
-            // INSERT trigger — logs NEW.id
-            this.db.run(`CREATE TRIGGER IF NOT EXISTS "_trg_${entityName}_insert"
+    for (const entityName of Object.keys(this.schemas)) {
+      // INSERT trigger — logs NEW.id
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS "_trg_${entityName}_insert"
                 AFTER INSERT ON "${entityName}"
                 BEGIN
                     INSERT INTO "_changes" (tbl, op, row_id) VALUES ('${entityName}', 'insert', NEW.id);
                 END`);
 
-            // UPDATE trigger — logs NEW.id (post-update row)
-            this.db.run(`CREATE TRIGGER IF NOT EXISTS "_trg_${entityName}_update"
+      // UPDATE trigger — logs NEW.id (post-update row)
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS "_trg_${entityName}_update"
                 AFTER UPDATE ON "${entityName}"
                 BEGIN
                     INSERT INTO "_changes" (tbl, op, row_id) VALUES ('${entityName}', 'update', NEW.id);
                 END`);
 
-            // DELETE trigger — logs OLD.id (row that was deleted)
-            this.db.run(`CREATE TRIGGER IF NOT EXISTS "_trg_${entityName}_delete"
+      // DELETE trigger — logs OLD.id (row that was deleted)
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS "_trg_${entityName}_delete"
                 AFTER DELETE ON "${entityName}"
                 BEGIN
                     INSERT INTO "_changes" (tbl, op, row_id) VALUES ('${entityName}', 'delete', OLD.id);
                 END`);
+    }
+
+    // Initialize watermark to current max (skip replaying historical changes)
+    const row = this.db
+      .query('SELECT MAX(id) as maxId FROM "_changes"')
+      .get() as any;
+    this._changeWatermark = row?.maxId ?? 0;
+  }
+
+  private runMigrations(): void {
+    for (const [entityName, schema] of Object.entries(this.schemas)) {
+      const existingColumns = this.db
+        .query(`PRAGMA table_info("${entityName}")`)
+        .all() as any[];
+      const existingNames = new Set(existingColumns.map((c) => c.name));
+
+      const storableFields = getStorableFields(schema);
+      for (const field of storableFields) {
+        if (!existingNames.has(field.name)) {
+          const sqlType = zodTypeToSqlType(field.type);
+          this.db.run(
+            `ALTER TABLE "${entityName}" ADD COLUMN "${field.name}" ${sqlType}`,
+          );
         }
+      }
+    }
+  }
 
-        // Initialize watermark to current max (skip replaying historical changes)
-        const row = this.db.query('SELECT MAX(id) as maxId FROM "_changes"').get() as any;
-        this._changeWatermark = row?.maxId ?? 0;
+  private createIndexes(indexes: Record<string, (string | string[])[]>): void {
+    for (const [tableName, indexDefs] of Object.entries(indexes)) {
+      for (const def of indexDefs) {
+        const cols = Array.isArray(def) ? def : [def];
+        const idxName = `idx_${tableName}_${cols.join("_")}`;
+        this.db.run(
+          `CREATE INDEX IF NOT EXISTS "${idxName}" ON "${tableName}" (${cols.map((c) => `"${c}"`).join(", ")})`,
+        );
+      }
+    }
+  }
+
+  private createUniqueConstraints(unique: Record<string, string[][]>): void {
+    for (const [tableName, groups] of Object.entries(unique)) {
+      for (const cols of groups) {
+        const idxName = `uq_${tableName}_${cols.join("_")}`;
+        this.db.run(
+          `CREATE UNIQUE INDEX IF NOT EXISTS "${idxName}" ON "${tableName}" (${cols.map((c) => `"${c}"`).join(", ")})`,
+        );
+      }
+    }
+  }
+
+  private createOrUpdateViews(views: ViewDefinitions): void {
+    for (const [viewName, def] of Object.entries(views)) {
+      const selectSql = this.normalizeViewSelect(def.as);
+      const createSql = `CREATE VIEW "${viewName}" AS ${selectSql}`;
+      const existing = this.db
+        .query("SELECT type, sql FROM sqlite_master WHERE name = ?")
+        .get(viewName) as { type?: string; sql?: string | null } | null;
+
+      if (!existing) {
+        this.db.run(createSql);
+        continue;
+      }
+
+      if (existing.type !== "view") {
+        throw new Error(`"${viewName}" already exists and is not a view.`);
+      }
+
+      if (
+        this.normalizeSql(existing.sql ?? "") !== this.normalizeSql(createSql)
+      ) {
+        this.db.run(`DROP VIEW IF EXISTS "${viewName}"`);
+        this.db.run(createSql);
+      }
+    }
+  }
+
+  private createReadonlyAccessor(
+    viewName: string,
+    _def: ViewDefinition,
+  ): Record<string, any> {
+    const readonlyError = () => {
+      throw new Error(`"${viewName}" is a read-only view.`);
+    };
+
+    return {
+      insert: readonlyError,
+      insertMany: readonlyError,
+      update: readonlyError,
+      upsert: readonlyError,
+      upsertMany: readonlyError,
+      findOrCreate: readonlyError,
+      delete: readonlyError,
+      restore: readonlyError,
+      select: (...cols: string[]) =>
+        createQueryBuilder(this._ctx, viewName, cols),
+      count: () =>
+        this._m(`${viewName}.count`, () => {
+          const row = this._stmt(
+            `SELECT COUNT(*) as count FROM "${viewName}"`,
+          ).get() as any;
+          return row?.count ?? 0;
+        }),
+      on: readonlyError,
+      _tableName: viewName,
+      _isView: true,
+    };
+  }
+
+  private normalizeViewSelect(sql: string): string {
+    return sql.trim().replace(/;+\s*$/, "");
+  }
+
+  private normalizeSql(sql: string): string {
+    return sql.replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  // =========================================================================
+  // Change Listeners — db.table.on('insert' | 'update' | 'delete', cb)
+  // =========================================================================
+
+  private _registerListener(
+    table: string,
+    event: ChangeEvent,
+    callback: (row: any) => void | Promise<void>,
+  ): () => void {
+    if (!this._reactive) {
+      throw new Error(
+        "Change listeners are disabled. Set { reactive: true } (or omit it) in Database options to enable .on().",
+      );
     }
 
-    private runMigrations(): void {
-        for (const [entityName, schema] of Object.entries(this.schemas)) {
-            const existingColumns = this.db.query(`PRAGMA table_info("${entityName}")`).all() as any[];
-            const existingNames = new Set(existingColumns.map(c => c.name));
+    const listener: Listener = { table, event, callback };
+    this._listeners.push(listener);
+    this._startPolling();
 
-            const storableFields = getStorableFields(schema);
-            for (const field of storableFields) {
-                if (!existingNames.has(field.name)) {
-                    const sqlType = zodTypeToSqlType(field.type);
-                    this.db.run(`ALTER TABLE "${entityName}" ADD COLUMN "${field.name}" ${sqlType}`);
-                }
+    return () => {
+      const idx = this._listeners.indexOf(listener);
+      if (idx >= 0) this._listeners.splice(idx, 1);
+      if (this._listeners.length === 0) this._stopPolling();
+    };
+  }
+
+  private _startPolling(): void {
+    if (this._pollTimer) return;
+    this._pollTimer = setInterval(
+      () => this._processChanges(),
+      this._pollInterval,
+    );
+  }
+
+  private _stopPolling(): void {
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
+  }
+
+  /**
+   * Core change dispatch loop.
+   *
+   * Fast path: checks MAX(id) against watermark first — if equal,
+   * there are no new changes and we skip entirely (no row materialization).
+   * Only fetches actual change rows when something has changed.
+   */
+  private _processChanges(): void {
+    // Fast path: check if anything changed at all (single scalar, index-only)
+    const head = this._stmt('SELECT MAX(id) as m FROM "_changes"').get() as any;
+    const maxId: number = head?.m ?? 0;
+    if (maxId <= this._changeWatermark) return;
+
+    const changes = this._stmt(
+      'SELECT id, tbl, op, row_id FROM "_changes" WHERE id > ? ORDER BY id',
+    ).all(this._changeWatermark) as {
+      id: number;
+      tbl: string;
+      op: string;
+      row_id: number;
+    }[];
+
+    for (const change of changes) {
+      const listeners = this._listeners.filter(
+        (l) => l.table === change.tbl && l.event === change.op,
+      );
+
+      if (listeners.length > 0) {
+        if (change.op === "delete") {
+          // Row is gone — pass just the id
+          const payload = { id: change.row_id };
+          for (const l of listeners) {
+            try {
+              l.callback(payload);
+            } catch {
+              /* listener error */
             }
+          }
+        } else {
+          // insert or update — re-fetch the current row
+          const row = getById(this._ctx, change.tbl, change.row_id);
+          if (row) {
+            for (const l of listeners) {
+              try {
+                l.callback(row);
+              } catch {
+                /* listener error */
+              }
+            }
+          }
         }
+      }
+
+      this._changeWatermark = change.id;
     }
 
-    private createIndexes(indexes: Record<string, (string | string[])[]>): void {
-        for (const [tableName, indexDefs] of Object.entries(indexes)) {
-            for (const def of indexDefs) {
-                const cols = Array.isArray(def) ? def : [def];
-                const idxName = `idx_${tableName}_${cols.join('_')}`;
-                this.db.run(`CREATE INDEX IF NOT EXISTS "${idxName}" ON "${tableName}" (${cols.map(c => `"${c}"`).join(', ')})`);
-            }
-        }
-    }
+    // Clean up consumed changes
+    this._stmt('DELETE FROM "_changes" WHERE id <= ?').run(
+      this._changeWatermark,
+    );
+  }
 
-    private createUniqueConstraints(unique: Record<string, string[][]>): void {
-        for (const [tableName, groups] of Object.entries(unique)) {
-            for (const cols of groups) {
-                const idxName = `uq_${tableName}_${cols.join('_')}`;
-                this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS "${idxName}" ON "${tableName}" (${cols.map(c => `"${c}"`).join(', ')})`);
-            }
-        }
-    }
+  // =========================================================================
+  // Transactions
+  // =========================================================================
 
-    private createOrUpdateViews(views: ViewDefinitions): void {
-        for (const [viewName, def] of Object.entries(views)) {
-            const selectSql = this.normalizeViewSelect(def.as);
-            const createSql = `CREATE VIEW "${viewName}" AS ${selectSql}`;
-            const existing = this.db.query(
-                'SELECT type, sql FROM sqlite_master WHERE name = ?'
-            ).get(viewName) as { type?: string; sql?: string | null } | null;
+  public transaction<T>(callback: () => T): T {
+    return this._m("transaction", () => this.db.transaction(callback)());
+  }
 
-            if (!existing) {
-                this.db.run(createSql);
-                continue;
-            }
+  /** Close the database: stops polling, clears cache, and releases the SQLite handle. */
+  public close(): void {
+    this._stopPolling();
+    this._stmtCache.clear();
+    this.db.close();
+  }
 
-            if (existing.type !== 'view') {
-                throw new Error(`"${viewName}" already exists and is not a view.`);
-            }
+  // =========================================================================
+  // Proxy Query
+  // =========================================================================
 
-            if (this.normalizeSql(existing.sql ?? '') !== this.normalizeSql(createSql)) {
-                this.db.run(`DROP VIEW IF EXISTS "${viewName}"`);
-                this.db.run(createSql);
-            }
-        }
-    }
+  /** Proxy callback query for complex SQL-like JOINs */
+  public query<T extends Record<string, any> = Record<string, any>>(
+    callback: (ctx: {
+      [K in keyof Schemas]: ProxyColumns<InferSchema<Schemas[K]>>;
+    }) => ProxyQueryResult,
+  ): T[] {
+    return this._m("query(proxy)", () =>
+      executeProxyQuery(
+        this.schemas,
+        callback as any,
+        (sql: string, params: any[]) => {
+          return this._stmt(sql).all(...params) as T[];
+        },
+      ),
+    );
+  }
 
-    private createReadonlyAccessor(viewName: string, _def: ViewDefinition): Record<string, any> {
-        const readonlyError = () => {
-            throw new Error(`"${viewName}" is a read-only view.`);
-        };
+  // =========================================================================
+  // Raw SQL
+  // =========================================================================
 
-        return {
-            insert: readonlyError,
-            insertMany: readonlyError,
-            update: readonlyError,
-            upsert: readonlyError,
-            upsertMany: readonlyError,
-            findOrCreate: readonlyError,
-            delete: readonlyError,
-            restore: readonlyError,
-            select: (...cols: string[]) => createQueryBuilder(this._ctx, viewName, cols),
-            count: () => this._m(`${viewName}.count`, () => {
-                const row = this._stmt(`SELECT COUNT(*) as count FROM "${viewName}"`).get() as any;
-                return row?.count ?? 0;
-            }),
-            on: readonlyError,
-            _tableName: viewName,
-            _isView: true,
-        };
-    }
+  /** Execute a raw SQL query and return results. */
+  public raw<T = any>(sql: string, ...params: any[]): T[] {
+    return this._m(
+      `raw: ${sql.slice(0, 60)}`,
+      () => this._stmt(sql).all(...params) as T[],
+    );
+  }
 
-    private normalizeViewSelect(sql: string): string {
-        return sql.trim().replace(/;+\s*$/, '');
-    }
+  /** Execute a raw SQL statement (INSERT/UPDATE/DELETE) without returning rows. */
+  public exec(sql: string, ...params: any[]): void {
+    this._m(`exec: ${sql.slice(0, 60)}`, () => this.db.run(sql, ...params));
+  }
 
-    private normalizeSql(sql: string): string {
-        return sql.replace(/\s+/g, ' ').trim().toLowerCase();
-    }
+  // =========================================================================
+  // Schema Introspection
+  // =========================================================================
 
-    // =========================================================================
-    // Change Listeners — db.table.on('insert' | 'update' | 'delete', cb)
-    // =========================================================================
+  /** Return the list of user-defined table names. */
+  public tables(): string[] {
+    return Object.keys(this.schemas);
+  }
 
-    private _registerListener(table: string, event: ChangeEvent, callback: (row: any) => void | Promise<void>): () => void {
-        if (!this._reactive) {
-            throw new Error(
-                'Change listeners are disabled. Set { reactive: true } (or omit it) in Database options to enable .on().'
-            );
-        }
+  /** Return the list of registered view names. */
+  public views(): string[] {
+    return Object.keys(this.viewDefinitions);
+  }
 
-        const listener: Listener = { table, event, callback };
-        this._listeners.push(listener);
-        this._startPolling();
+  /** Return column info for a table via PRAGMA table_info. */
+  public columns(
+    tableName: string,
+  ): { name: string; type: string; notnull: number; pk: number }[] {
+    return this.db.query(`PRAGMA table_info("${tableName}")`).all() as any[];
+  }
 
-        return () => {
-            const idx = this._listeners.indexOf(listener);
-            if (idx >= 0) this._listeners.splice(idx, 1);
-            if (this._listeners.length === 0) this._stopPolling();
-        };
-    }
+  // =========================================================================
+  // Data Import / Export
+  // =========================================================================
 
-    private _startPolling(): void {
-        if (this._pollTimer) return;
-        this._pollTimer = setInterval(() => this._processChanges(), this._pollInterval);
-    }
+  /**
+   * Export all data as a JSON-serializable object.
+   * Each key is a table name, value is an array of raw row objects.
+   */
+  public dump(): Record<string, any[]> {
+    return this._m("dump", () => {
+      const result: Record<string, any[]> = {};
+      for (const tableName of Object.keys(this.schemas)) {
+        result[tableName] = this.db.query(`SELECT * FROM "${tableName}"`).all();
+      }
+      return result;
+    });
+  }
 
-    private _stopPolling(): void {
-        if (this._pollTimer) {
-            clearInterval(this._pollTimer);
-            this._pollTimer = null;
-        }
-    }
-
-    /**
-     * Core change dispatch loop.
-     *
-     * Fast path: checks MAX(id) against watermark first — if equal,
-     * there are no new changes and we skip entirely (no row materialization).
-     * Only fetches actual change rows when something has changed.
-     */
-    private _processChanges(): void {
-        // Fast path: check if anything changed at all (single scalar, index-only)
-        const head = this._stmt('SELECT MAX(id) as m FROM "_changes"').get() as any;
-        const maxId: number = head?.m ?? 0;
-        if (maxId <= this._changeWatermark) return;
-
-        const changes = this._stmt(
-            'SELECT id, tbl, op, row_id FROM "_changes" WHERE id > ? ORDER BY id'
-        ).all(this._changeWatermark) as { id: number; tbl: string; op: string; row_id: number }[];
-
-        for (const change of changes) {
-            const listeners = this._listeners.filter(
-                l => l.table === change.tbl && l.event === change.op
-            );
-
-            if (listeners.length > 0) {
-                if (change.op === 'delete') {
-                    // Row is gone — pass just the id
-                    const payload = { id: change.row_id };
-                    for (const l of listeners) {
-                        try { l.callback(payload); } catch { /* listener error */ }
-                    }
-                } else {
-                    // insert or update — re-fetch the current row
-                    const row = getById(this._ctx, change.tbl, change.row_id);
-                    if (row) {
-                        for (const l of listeners) {
-                            try { l.callback(row); } catch { /* listener error */ }
-                        }
-                    }
-                }
-            }
-
-            this._changeWatermark = change.id;
-        }
-
-        // Clean up consumed changes
-        this._stmt('DELETE FROM "_changes" WHERE id <= ?').run(this._changeWatermark);
-    }
-
-    // =========================================================================
-    // Transactions
-    // =========================================================================
-
-    public transaction<T>(callback: () => T): T {
-        return this._m('transaction', () => this.db.transaction(callback)());
-    }
-
-    /** Close the database: stops polling, clears cache, and releases the SQLite handle. */
-    public close(): void {
-        this._stopPolling();
-        this._stmtCache.clear();
-        this.db.close();
-    }
-
-    // =========================================================================
-    // Proxy Query
-    // =========================================================================
-
-    /** Proxy callback query for complex SQL-like JOINs */
-    public query<T extends Record<string, any> = Record<string, any>>(
-        callback: (ctx: { [K in keyof Schemas]: ProxyColumns<InferSchema<Schemas[K]>> }) => ProxyQueryResult
-    ): T[] {
-        return this._m('query(proxy)', () => executeProxyQuery(
-            this.schemas,
-            callback as any,
-            (sql: string, params: any[]) => {
-                return this._stmt(sql).all(...params) as T[];
-            },
-        ));
-    }
-
-    // =========================================================================
-    // Raw SQL
-    // =========================================================================
-
-    /** Execute a raw SQL query and return results. */
-    public raw<T = any>(sql: string, ...params: any[]): T[] {
-        return this._m(`raw: ${sql.slice(0, 60)}`, () => this._stmt(sql).all(...params) as T[]);
-    }
-
-    /** Execute a raw SQL statement (INSERT/UPDATE/DELETE) without returning rows. */
-    public exec(sql: string, ...params: any[]): void {
-        this._m(`exec: ${sql.slice(0, 60)}`, () => this.db.run(sql, ...params));
-    }
-
-    // =========================================================================
-    // Schema Introspection
-    // =========================================================================
-
-    /** Return the list of user-defined table names. */
-    public tables(): string[] {
-        return Object.keys(this.schemas);
-    }
-
-    /** Return the list of registered view names. */
-    public views(): string[] {
-        return Object.keys(this.viewDefinitions);
-    }
-
-    /** Return column info for a table via PRAGMA table_info. */
-    public columns(tableName: string): { name: string; type: string; notnull: number; pk: number }[] {
-        return this.db.query(`PRAGMA table_info("${tableName}")`).all() as any[];
-    }
-
-    // =========================================================================
-    // Data Import / Export
-    // =========================================================================
-
-    /**
-     * Export all data as a JSON-serializable object.
-     * Each key is a table name, value is an array of raw row objects.
-     */
-    public dump(): Record<string, any[]> {
-        return this._m('dump', () => {
-            const result: Record<string, any[]> = {};
-            for (const tableName of Object.keys(this.schemas)) {
-                result[tableName] = this.db.query(`SELECT * FROM "${tableName}"`).all();
-            }
-            return result;
-        });
-    }
-
-    /**
-     * Import data from a dump object. Truncates existing data first.
-     * Use `{ append: true }` to insert without truncating.
-     */
-    public load(data: Record<string, any[]>, options?: { append?: boolean }): void {
-        this._m(`load(${Object.keys(data).join(',')})`, () => {
-            const txn = this.db.transaction(() => {
-                for (const [tableName, rows] of Object.entries(data)) {
-                    if (!this.schemas[tableName]) continue;
-                    if (!options?.append) {
-                        this.db.run(`DELETE FROM "${tableName}"`);
-                    }
-                    for (const row of rows) {
-                        const cols = Object.keys(row).filter(k => k !== 'id');
-                        const placeholders = cols.map(() => '?').join(', ');
-                        const values = cols.map(c => {
-                            const v = row[c];
-                            if (v !== null && v !== undefined && typeof v === 'object' && !(v instanceof Buffer)) {
-                                return JSON.stringify(v);
-                            }
-                            return v;
-                        });
-                        this.db.query(`INSERT INTO "${tableName}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders})`).run(...values);
-                    }
-                }
+  /**
+   * Import data from a dump object. Truncates existing data first.
+   * Use `{ append: true }` to insert without truncating.
+   */
+  public load(
+    data: Record<string, any[]>,
+    options?: { append?: boolean },
+  ): void {
+    this._m(`load(${Object.keys(data).join(",")})`, () => {
+      const txn = this.db.transaction(() => {
+        for (const [tableName, rows] of Object.entries(data)) {
+          if (!this.schemas[tableName]) continue;
+          if (!options?.append) {
+            this.db.run(`DELETE FROM "${tableName}"`);
+          }
+          for (const row of rows) {
+            const cols = Object.keys(row).filter((k) => k !== "id");
+            const placeholders = cols.map(() => "?").join(", ");
+            const values = cols.map((c) => {
+              const v = row[c];
+              if (
+                v !== null &&
+                v !== undefined &&
+                typeof v === "object" &&
+                !(v instanceof Buffer)
+              ) {
+                return JSON.stringify(v);
+              }
+              return v;
             });
-            txn();
-        });
+            this.db
+              .query(
+                `INSERT INTO "${tableName}" (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})`,
+              )
+              .run(...values);
+          }
+        }
+      });
+      txn();
+    });
+  }
+
+  /**
+   * Seed tables with fixture data. Each key is a table name, value is an
+   * array of records to insert. Does NOT truncate — use for additive seeding.
+   */
+  public seed(fixtures: Record<string, Record<string, any>[]>): void {
+    this.load(fixtures, { append: true });
+  }
+
+  // =========================================================================
+  // Schema Diffing
+  // =========================================================================
+
+  /**
+   * Compare Zod schemas against the live SQLite table structure.
+   * Returns a diff object per table: { added, removed, typeChanged }.
+   */
+  public diff(): Record<
+    string,
+    {
+      added: string[];
+      removed: string[];
+      typeChanged: { column: string; expected: string; actual: string }[];
     }
+  > {
+    return this._m("diff", () => {
+      const result: Record<
+        string,
+        {
+          added: string[];
+          removed: string[];
+          typeChanged: { column: string; expected: string; actual: string }[];
+        }
+      > = {};
+      const systemCols = new Set(["id", "createdAt", "updatedAt", "deletedAt"]);
 
-    /**
-     * Seed tables with fixture data. Each key is a table name, value is an
-     * array of records to insert. Does NOT truncate — use for additive seeding.
-     */
-    public seed(fixtures: Record<string, Record<string, any>[]>): void {
-        this.load(fixtures, { append: true });
-    }
+      for (const [tableName, schema] of Object.entries(this.schemas)) {
+        const schemaFields = getStorableFields(schema);
+        const schemaColMap = new Map(
+          schemaFields.map((f) => [f.name, zodTypeToSqlType(f.type)]),
+        );
 
-    // =========================================================================
-    // Schema Diffing
-    // =========================================================================
+        const liveColumns = this.columns(tableName);
+        const liveColMap = new Map(liveColumns.map((c) => [c.name, c.type]));
 
-    /**
-     * Compare Zod schemas against the live SQLite table structure.
-     * Returns a diff object per table: { added, removed, typeChanged }.
-     */
-    public diff(): Record<string, { added: string[]; removed: string[]; typeChanged: { column: string; expected: string; actual: string }[] }> {
-        return this._m('diff', () => {
-            const result: Record<string, { added: string[]; removed: string[]; typeChanged: { column: string; expected: string; actual: string }[] }> = {};
-            const systemCols = new Set(['id', 'createdAt', 'updatedAt', 'deletedAt']);
+        const added: string[] = [];
+        const removed: string[] = [];
+        const typeChanged: {
+          column: string;
+          expected: string;
+          actual: string;
+        }[] = [];
 
-            for (const [tableName, schema] of Object.entries(this.schemas)) {
-                const schemaFields = getStorableFields(schema);
-                const schemaColMap = new Map(schemaFields.map(f => [f.name, zodTypeToSqlType(f.type)]));
-
-                const liveColumns = this.columns(tableName);
-                const liveColMap = new Map(liveColumns.map(c => [c.name, c.type]));
-
-                const added: string[] = [];
-                const removed: string[] = [];
-                const typeChanged: { column: string; expected: string; actual: string }[] = [];
-
-                for (const [col, expectedType] of schemaColMap) {
-                    if (!liveColMap.has(col)) {
-                        added.push(col);
-                    } else {
-                        const actualType = liveColMap.get(col)!;
-                        if (actualType !== expectedType) {
-                            typeChanged.push({ column: col, expected: expectedType, actual: actualType });
-                        }
-                    }
-                }
-
-                for (const col of liveColMap.keys()) {
-                    if (!systemCols.has(col) && !schemaColMap.has(col)) {
-                        removed.push(col);
-                    }
-                }
-
-                if (added.length > 0 || removed.length > 0 || typeChanged.length > 0) {
-                    result[tableName] = { added, removed, typeChanged };
-                }
+        for (const [col, expectedType] of schemaColMap) {
+          if (!liveColMap.has(col)) {
+            added.push(col);
+          } else {
+            const actualType = liveColMap.get(col)!;
+            if (actualType !== expectedType) {
+              typeChanged.push({
+                column: col,
+                expected: expectedType,
+                actual: actualType,
+              });
             }
+          }
+        }
 
-            return result;
-        });
-    }
+        for (const col of liveColMap.keys()) {
+          if (!systemCols.has(col) && !schemaColMap.has(col)) {
+            removed.push(col);
+          }
+        }
+
+        if (added.length > 0 || removed.length > 0 || typeChanged.length > 0) {
+          result[tableName] = { added, removed, typeChanged };
+        }
+      }
+
+      return result;
+    });
+  }
 }
 
 // =============================================================================
@@ -643,21 +818,25 @@ class _Database<Schemas extends SchemaMap> {
 // =============================================================================
 
 type ViewSchemas<V extends ViewDefinitions> = {
-    [K in keyof V]: V[K] extends ViewDefinition<infer T> ? T : never;
+  [K in keyof V]: V[K] extends ViewDefinition<infer T> ? T : never;
 };
 
 type Database<
-    S extends SchemaMap,
-    R extends RelationsConfig = {},
-    V extends ViewDefinitions = {},
-> = _Database<S> & TypedNavAccessors<S, R> & TypedReadonlyAccessors<ViewSchemas<V>>;
+  S extends SchemaMap,
+  R extends RelationsConfig = {},
+  V extends ViewDefinitions = {},
+> = _Database<S> &
+  TypedNavAccessors<S, R> &
+  TypedReadonlyAccessors<ViewSchemas<V>>;
 
 const Database = _Database as unknown as new <
-    S extends SchemaMap,
-    const R extends RelationsConfig = {},
-    const V extends ViewDefinitions = {},
+  S extends SchemaMap,
+  const R extends RelationsConfig = {},
+  const V extends ViewDefinitions = {},
 >(
-    dbFile: string, schemas: S, options?: DatabaseOptions<R, V>
+  dbFile: string,
+  schemas: S,
+  options?: DatabaseOptions<R, V>,
 ) => Database<S, R, V>;
 
 export { Database };
