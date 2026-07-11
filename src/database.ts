@@ -39,6 +39,7 @@ import {
 } from "./schema";
 import { transformFromStorage } from "./schema";
 import type { DatabaseContext } from "./context";
+import type { PendingInsertOperation } from "./conflict";
 import { buildWhereClause } from "./helpers";
 import { attachMethods } from "./entity";
 import {
@@ -100,6 +101,12 @@ class _Database<Schemas extends SchemaMap> {
   /** Prepared statement cache — avoids re-compiling identical SQL. */
   private _stmtCache = new Map<string, ReturnType<SqliteDatabase["query"]>>();
 
+  /** Lazy inserts waiting to be executed before the next ORM operation. */
+  private _pendingInserts = new Set<PendingInsertOperation>();
+
+  /** Reentrancy guard while flushing lazy inserts. */
+  private _flushingPendingInserts = false;
+
   /** Get or create a cached prepared statement. */
   private _stmt(sql: string): ReturnType<SqliteDatabase["query"]> {
     let stmt = this._stmtCache.get(sql);
@@ -115,8 +122,31 @@ class _Database<Schemas extends SchemaMap> {
    * When debug is off, executes fn directly with zero overhead.
    */
   private _m<T>(label: string, fn: () => T): T {
+    if (!this._flushingPendingInserts && this._pendingInserts.size > 0) {
+      this._flushPendingInserts();
+    }
     if (this._debug) return this._measure.measureSync.assert(label, fn);
     return fn();
+  }
+
+  private _registerPendingInsert(operation: PendingInsertOperation): void {
+    this._pendingInserts.add(operation);
+  }
+
+  private _unregisterPendingInsert(operation: PendingInsertOperation): void {
+    this._pendingInserts.delete(operation);
+  }
+
+  private _flushPendingInserts(): void {
+    if (this._flushingPendingInserts || this._pendingInserts.size === 0) return;
+    this._flushingPendingInserts = true;
+    try {
+      for (const operation of [...this._pendingInserts]) {
+        if (operation.isPending()) operation.execute();
+      }
+    } finally {
+      this._flushingPendingInserts = false;
+    }
   }
 
   constructor(
@@ -166,6 +196,11 @@ class _Database<Schemas extends SchemaMap> {
       cascade: options.cascade ?? {},
       _m: <T>(label: string, fn: () => T): T => this._m(label, fn),
       _stmt: (sql: string) => this._stmt(sql),
+      _registerPendingInsert: (operation) =>
+        this._registerPendingInsert(operation),
+      _unregisterPendingInsert: (operation) =>
+        this._unregisterPendingInsert(operation),
+      _flushPendingInserts: () => this._flushPendingInserts(),
     };
 
     this._m("Sync tables", () => this.syncTablesToSchemas());
@@ -699,6 +734,7 @@ class _Database<Schemas extends SchemaMap> {
 
   /** Close the database: stops polling, clears cache, and releases the SQLite handle. */
   public close(): void {
+    this._flushPendingInserts();
     this._stopPolling();
     this._stmtCache.clear();
     this.db.close();

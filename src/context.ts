@@ -11,6 +11,7 @@ import type {
   AugmentedEntity,
   TableHooks,
 } from "./types";
+import type { PendingInsertOperation } from "./conflict";
 
 export interface DatabaseContext {
   /** The raw bun:sqlite Database handle. */
@@ -69,4 +70,13 @@ export interface DatabaseContext {
    * Falls back to `db.query(sql)` if the statement was finalized.
    */
   _stmt(sql: string): ReturnType<SqliteDatabase["query"]>;
+
+  /** Register a lazy insert that should be executed before the next ORM operation unless it becomes onConflict(). */
+  _registerPendingInsert?(operation: PendingInsertOperation): void;
+
+  /** Remove a lazy insert from the pending queue. */
+  _unregisterPendingInsert?(operation: PendingInsertOperation): void;
+
+  /** Execute all pending lazy inserts. */
+  _flushPendingInserts?(): void;
 }

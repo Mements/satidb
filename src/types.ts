@@ -248,6 +248,51 @@ export type DeleteBuilder<T> = {
   exec: () => number;
 };
 
+export type ConflictColumn<T> = Extract<keyof T, string> | "id";
+
+export type ConflictExpression = {
+  readonly sql: string;
+  readonly params: any[];
+};
+
+export type ConflictMergeHelpers<T> = {
+  current: <K extends ConflictColumn<T>>(field: K) => ConflictExpression;
+  excluded: <K extends ConflictColumn<T>>(field: K) => ConflictExpression;
+  coalesceExcluded: <K extends ConflictColumn<T>>(
+    field: K,
+  ) => ConflictExpression;
+  coalesceExcludedNonEmpty: <K extends ConflictColumn<T>>(
+    field: K,
+  ) => ConflictExpression;
+  coalesceCurrentExcluded: <K extends ConflictColumn<T>>(
+    field: K,
+  ) => ConflictExpression;
+  keepExistingIfExcludedEmpty: <K extends ConflictColumn<T>>(
+    field: K,
+  ) => ConflictExpression;
+  maxCurrentExcluded: <K extends ConflictColumn<T>>(
+    field: K,
+    fallback?: number,
+  ) => ConflictExpression;
+  literal: (value: any) => ConflictExpression;
+  sql: (fragment: string, params?: any[]) => ConflictExpression;
+};
+
+export type OnConflictBuilder<T> = {
+  merge: (
+    mapper: (
+      t: ConflictMergeHelpers<T>,
+    ) => Partial<Record<ConflictColumn<T>, ConflictExpression>>,
+  ) => T;
+  doNothing: () => T | null;
+};
+
+export type InsertResult<T> = T & {
+  onConflict: (
+    target: ConflictColumn<T> | ConflictColumn<T>[],
+  ) => OnConflictBuilder<T>;
+};
+
 /** Nav-aware entity accessor for a specific table */
 export type NavEntityAccessor<
   S extends SchemaMap,
@@ -257,7 +302,7 @@ export type NavEntityAccessor<
   get: (id: number) => NavEntity<S, R, Table> | null;
   insert: (
     data: Omit<z.input<S[Table & keyof S]>, "id">,
-  ) => NavEntity<S, R, Table>;
+  ) => InsertResult<NavEntity<S, R, Table>>;
   insertMany: (
     rows: Omit<z.input<S[Table & keyof S]>, "id">[],
   ) => NavEntity<S, R, Table>[];
@@ -326,7 +371,7 @@ export type ReadonlyEntity<S extends z.ZodType<any>> = InferSchema<S>;
 
 export type EntityAccessor<S extends z.ZodType<any>> = {
   get: (id: number) => AugmentedEntity<S> | null;
-  insert: (data: EntityData<S>) => AugmentedEntity<S>;
+  insert: (data: EntityData<S>) => InsertResult<AugmentedEntity<S>>;
   insertMany: (rows: EntityData<S>[]) => AugmentedEntity<S>[];
   update: ((
     id: number,

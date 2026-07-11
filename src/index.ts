@@ -26,6 +26,11 @@ export type {
   ReadonlyEntity,
   ReadonlyEntityAccessor,
   TypedReadonlyAccessors,
+  InsertResult,
+  OnConflictBuilder,
+  ConflictMergeHelpers,
+  ConflictExpression,
+  ConflictColumn,
 } from "./types";
 export { defineView } from "./types";
 
@@ -51,3 +56,4 @@ export {
   createFunctionProxy,
   op,
 } from "./ast";
+export { ConflictMergeHelpers as ConflictMergeHelperRuntime } from "./conflict";

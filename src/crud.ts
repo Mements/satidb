@@ -8,16 +8,22 @@ import type { AugmentedEntity, UpdateBuilder, DeleteBuilder } from "./types";
 import { asZodObject } from "./types";
 import { transformForStorage, transformFromStorage } from "./schema";
 import type { DatabaseContext } from "./context";
+import { createLazyInsertResult } from "./conflict";
 
 // ---------------------------------------------------------------------------
 // Read helpers
 // ---------------------------------------------------------------------------
+
+function flushPending(ctx: DatabaseContext): void {
+  ctx._flushPendingInserts?.();
+}
 
 export function getById(
   ctx: DatabaseContext,
   entityName: string,
   id: number,
 ): AugmentedEntity<any> | null {
+  flushPending(ctx);
   const row = ctx
     ._stmt(`SELECT * FROM "${entityName}" WHERE id = ?`)
     .get(id) as any;
@@ -33,6 +39,7 @@ export function getOne(
   entityName: string,
   conditions: Record<string, any>,
 ): AugmentedEntity<any> | null {
+  flushPending(ctx);
   const { clause, values } = ctx.buildWhereClause(conditions);
   const row = ctx
     ._stmt(`SELECT * FROM "${entityName}" ${clause} LIMIT 1`)
@@ -49,6 +56,7 @@ export function findMany(
   entityName: string,
   conditions: Record<string, any> = {},
 ): AugmentedEntity<any>[] {
+  flushPending(ctx);
   const { clause, values } = ctx.buildWhereClause(conditions);
   const rows = ctx
     ._stmt(`SELECT * FROM "${entityName}" ${clause}`)
@@ -65,7 +73,7 @@ export function findMany(
 // Write operations
 // ---------------------------------------------------------------------------
 
-export function insert<T extends Record<string, any>>(
+function executeInsert<T extends Record<string, any>>(
   ctx: DatabaseContext,
   entityName: string,
   data: Omit<T, "id">,
@@ -112,12 +120,26 @@ export function insert<T extends Record<string, any>>(
   return newEntity;
 }
 
+export function insert<T extends Record<string, any>>(
+  ctx: DatabaseContext,
+  entityName: string,
+  data: Omit<T, "id">,
+): AugmentedEntity<any> {
+  return createLazyInsertResult(
+    ctx,
+    entityName,
+    data as Record<string, any>,
+    () => executeInsert(ctx, entityName, data),
+  );
+}
+
 export function update<T extends Record<string, any>>(
   ctx: DatabaseContext,
   entityName: string,
   id: number,
   data: Partial<Omit<T, "id">>,
 ): AugmentedEntity<any> | null {
+  flushPending(ctx);
   const schema = ctx.schemas[entityName]!;
   let inputData = { ...data } as Record<string, any>;
 
@@ -160,6 +182,7 @@ export function updateWhere(
   data: Record<string, any>,
   conditions: Record<string, any>,
 ): number {
+  flushPending(ctx);
   const schema = ctx.schemas[entityName]!;
   const validatedData = asZodObject(schema).partial().parse(data);
   const transformed = transformForStorage(validatedData);
@@ -200,6 +223,7 @@ export function upsert<T extends Record<string, any>>(
   data: any,
   conditions: any = {},
 ): AugmentedEntity<any> {
+  flushPending(ctx);
   const hasId = data?.id && typeof data.id === "number";
   const existing = hasId
     ? getById(ctx, entityName, data.id)
@@ -219,7 +243,7 @@ export function upsert<T extends Record<string, any>>(
   }
   const insertData = { ...(conditions ?? {}), ...(data ?? {}) };
   delete insertData.id;
-  return insert(ctx, entityName, insertData);
+  return executeInsert(ctx, entityName, insertData);
 }
 
 /** Find a row matching conditions, or create it with the merged data. Returns { entity, created }. */
@@ -229,11 +253,12 @@ export function findOrCreate<T extends Record<string, any>>(
   conditions: Record<string, any>,
   defaults: Record<string, any> = {},
 ): { entity: AugmentedEntity<any>; created: boolean } {
+  flushPending(ctx);
   const existing = getOne(ctx, entityName, conditions);
   if (existing) return { entity: existing, created: false };
   const data = { ...conditions, ...defaults };
   delete (data as any).id;
-  return { entity: insert(ctx, entityName, data), created: true };
+  return { entity: executeInsert(ctx, entityName, data), created: true };
 }
 
 export function deleteEntity(
@@ -241,6 +266,7 @@ export function deleteEntity(
   entityName: string,
   id: number,
 ): void {
+  flushPending(ctx);
   // beforeDelete hook — return false to cancel
   const hooks = ctx.hooks[entityName];
   if (hooks?.beforeDelete) {
@@ -260,6 +286,7 @@ export function deleteWhere(
   entityName: string,
   conditions: Record<string, any>,
 ): number {
+  flushPending(ctx);
   const { clause, values } = ctx.buildWhereClause(conditions);
   if (!clause)
     throw new Error("delete().where() requires at least one condition");
@@ -303,6 +330,7 @@ export function insertMany<T extends Record<string, any>>(
   entityName: string,
   rows: Omit<T, "id">[],
 ): AugmentedEntity<any>[] {
+  flushPending(ctx);
   if (rows.length === 0) return [];
   const schema = ctx.schemas[entityName]!;
   const zodSchema = asZodObject(schema).passthrough();
@@ -360,6 +388,7 @@ export function upsertMany<T extends Record<string, any>>(
   rows: any[],
   conditions: Record<string, any> = {},
 ): AugmentedEntity<any>[] {
+  flushPending(ctx);
   if (rows.length === 0) return [];
 
   const txn = ctx.db.transaction(() => {
