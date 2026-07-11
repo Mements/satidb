@@ -168,10 +168,7 @@ class _Database<Schemas extends SchemaMap> {
       _stmt: (sql: string) => this._stmt(sql),
     };
 
-    this._m("Init tables", () => this.initializeTables());
-    if (this._reactive)
-      this._m("Change tracking", () => this.initializeChangeTracking());
-    this._m("Run migrations", () => this.runMigrations());
+    this._m("Sync tables", () => this.syncTablesToSchemas());
     if (options.indexes)
       this._m("Create indexes", () => this.createIndexes(options.indexes!));
     if (options.unique)
@@ -180,6 +177,8 @@ class _Database<Schemas extends SchemaMap> {
       );
     if (options.views)
       this._m("Create views", () => this.createOrUpdateViews(options.views!));
+    if (this._reactive)
+      this._m("Change tracking", () => this.initializeChangeTracking());
 
     // Create typed entity accessors (db.users, db.posts, etc.)
     for (const entityName of Object.keys(schemas)) {
@@ -303,41 +302,154 @@ class _Database<Schemas extends SchemaMap> {
   // Table Initialization & Migrations
   // =========================================================================
 
-  private initializeTables(): void {
-    for (const [entityName, schema] of Object.entries(this.schemas)) {
-      const storableFields = getStorableFields(schema);
-      const columnDefs = storableFields.map(
-        (f) => `"${f.name}" ${zodTypeToSqlType(f.type)}`,
-      );
+  private syncTablesToSchemas(): void {
+    // Schema-first behavior: the Zod schema is the source of truth.
+    // If an existing table was created from an older/incompatible schema,
+    // keep its data by renaming it to table_vN and create a fresh table.
+    // We loop because renaming a parent table can cause SQLite to rewrite
+    // child table FK SQL to point at the backup name; the next pass catches
+    // and repairs those dependent tables too.
+    const maxPasses = Math.max(1, Object.keys(this.schemas).length + 1);
 
-      // Add timestamp columns
-      if (this._timestamps) {
-        columnDefs.push('"createdAt" TEXT');
-        columnDefs.push('"updatedAt" TEXT');
+    for (let pass = 0; pass < maxPasses; pass++) {
+      let changed = false;
+
+      for (const [entityName, schema] of Object.entries(this.schemas)) {
+        const expectedSql = this.createTableSql(entityName, schema);
+        const existing = this.db
+          .query(
+            `SELECT type, sql FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')`,
+          )
+          .get(entityName) as { type?: string; sql?: string | null } | null;
+
+        if (!existing) {
+          this.db.run(expectedSql);
+          changed = true;
+          continue;
+        }
+
+        if (existing.type !== "table") {
+          throw new Error(`"${entityName}" already exists and is not a table.`);
+        }
+
+        if (
+          this.normalizeSql(existing.sql ?? "") !==
+          this.normalizeSql(expectedSql)
+        ) {
+          this.backupAndRecreateTable(entityName, schema);
+          changed = true;
+          continue;
+        }
       }
-      // Add soft delete column
-      if (this._softDeletes) {
-        columnDefs.push('"deletedAt" TEXT');
-      }
 
-      const constraints: string[] = [];
+      if (!changed) return;
+    }
 
-      const belongsToRels = this.relationships.filter(
-        (rel) => rel.type === "belongs-to" && rel.from === entityName,
-      );
-      for (const rel of belongsToRels) {
-        constraints.push(
-          `FOREIGN KEY ("${rel.foreignKey}") REFERENCES "${rel.to}"(id) ON DELETE SET NULL`,
-        );
-      }
+    throw new Error(
+      "Schema sync did not stabilize. Check for conflicting table/view definitions.",
+    );
+  }
 
-      const allCols = columnDefs.join(", ");
-      const allConstraints =
-        constraints.length > 0 ? ", " + constraints.join(", ") : "";
-      this.db.run(
-        `CREATE TABLE IF NOT EXISTS "${entityName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${allCols}${allConstraints})`,
+  private createTableSql(entityName: string, schema: z.ZodType<any>): string {
+    const storableFields = getStorableFields(schema);
+    const columnDefs = storableFields.map(
+      (f) => `"${f.name}" ${zodTypeToSqlType(f.type)}`,
+    );
+
+    // Add timestamp columns
+    if (this._timestamps) {
+      columnDefs.push('"createdAt" TEXT');
+      columnDefs.push('"updatedAt" TEXT');
+    }
+    // Add soft delete column
+    if (this._softDeletes) {
+      columnDefs.push('"deletedAt" TEXT');
+    }
+
+    const constraints: string[] = [];
+
+    const belongsToRels = this.relationships.filter(
+      (rel) => rel.type === "belongs-to" && rel.from === entityName,
+    );
+    for (const rel of belongsToRels) {
+      constraints.push(
+        `FOREIGN KEY ("${rel.foreignKey}") REFERENCES "${rel.to}"(id) ON DELETE SET NULL`,
       );
     }
+
+    const body = [
+      "id INTEGER PRIMARY KEY AUTOINCREMENT",
+      ...columnDefs,
+      ...constraints,
+    ].join(", ");
+    return `CREATE TABLE "${entityName}" (${body})`;
+  }
+
+  private backupAndRecreateTable(
+    entityName: string,
+    schema: z.ZodType<any>,
+  ): void {
+    const backupName = this.nextBackupTableName(entityName);
+
+    const txn = this.db.transaction(() => {
+      // Index and trigger names are global in SQLite. Drop ORM-owned ones
+      // before the rename so the fresh table can recreate them with the
+      // normal idx_/uq_/_trg_ names.
+      this.dropOrmManagedIndexes(entityName);
+      this.dropOrmManagedTriggers(entityName);
+
+      this.db.run(`ALTER TABLE "${entityName}" RENAME TO "${backupName}"`);
+      this.db.run(this.createTableSql(entityName, schema));
+    });
+
+    txn();
+  }
+
+  private nextBackupTableName(tableName: string): string {
+    let version = 1;
+    while (this.objectExists(`${tableName}_v${version}`)) {
+      version++;
+    }
+    return `${tableName}_v${version}`;
+  }
+
+  private objectExists(name: string): boolean {
+    const row = this.db
+      .query(`SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1`)
+      .get(name) as any;
+    return !!row;
+  }
+
+  private dropOrmManagedIndexes(tableName: string): void {
+    const rows = this.db
+      .query(
+        `SELECT name
+             FROM sqlite_master
+             WHERE type = 'index'
+               AND tbl_name = ?
+               AND sql IS NOT NULL`,
+      )
+      .all(tableName) as { name: string }[];
+
+    const ownedPrefixes = [`idx_${tableName}_`, `uq_${tableName}_`];
+    for (const row of rows) {
+      if (!ownedPrefixes.some((prefix) => row.name.startsWith(prefix)))
+        continue;
+      this.db.run(`DROP INDEX IF EXISTS "${this.escapeIdentifier(row.name)}"`);
+    }
+  }
+
+  private dropOrmManagedTriggers(tableName: string): void {
+    for (const event of ["insert", "update", "delete"]) {
+      const triggerName = `_trg_${tableName}_${event}`;
+      this.db.run(
+        `DROP TRIGGER IF EXISTS "${this.escapeIdentifier(triggerName)}"`,
+      );
+    }
+  }
+
+  private escapeIdentifier(value: string): string {
+    return value.replace(/"/g, '""');
   }
 
   /**
@@ -383,25 +495,6 @@ class _Database<Schemas extends SchemaMap> {
       .query('SELECT MAX(id) as maxId FROM "_changes"')
       .get() as any;
     this._changeWatermark = row?.maxId ?? 0;
-  }
-
-  private runMigrations(): void {
-    for (const [entityName, schema] of Object.entries(this.schemas)) {
-      const existingColumns = this.db
-        .query(`PRAGMA table_info("${entityName}")`)
-        .all() as any[];
-      const existingNames = new Set(existingColumns.map((c) => c.name));
-
-      const storableFields = getStorableFields(schema);
-      for (const field of storableFields) {
-        if (!existingNames.has(field.name)) {
-          const sqlType = zodTypeToSqlType(field.type);
-          this.db.run(
-            `ALTER TABLE "${entityName}" ADD COLUMN "${field.name}" ${sqlType}`,
-          );
-        }
-      }
-    }
   }
 
   private createIndexes(indexes: Record<string, (string | string[])[]>): void {
