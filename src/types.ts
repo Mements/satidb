@@ -258,6 +258,27 @@ export type ConflictExpression = {
 export type ConflictMergeHelpers<T> = {
   current: <K extends ConflictColumn<T>>(field: K) => ConflictExpression;
   excluded: <K extends ConflictColumn<T>>(field: K) => ConflictExpression;
+
+  /** New value wins unless it is NULL. */
+  excludedIfNotNull: <K extends ConflictColumn<T>>(
+    field: K,
+  ) => ConflictExpression;
+
+  /** New value wins unless it is NULL or ''. */
+  excludedIfNotEmpty: <K extends ConflictColumn<T>>(
+    field: K,
+  ) => ConflictExpression;
+
+  /** First non-null value wins; current value is kept once present. */
+  keepFirst: <K extends ConflictColumn<T>>(field: K) => ConflictExpression;
+
+  /** Greater numeric value wins. */
+  max: <K extends ConflictColumn<T>>(
+    field: K,
+    fallback?: number,
+  ) => ConflictExpression;
+
+  // Backwards-compatible verbose aliases.
   coalesceExcluded: <K extends ConflictColumn<T>>(
     field: K,
   ) => ConflictExpression;
@@ -274,23 +295,9 @@ export type ConflictMergeHelpers<T> = {
     field: K,
     fallback?: number,
   ) => ConflictExpression;
+
   literal: (value: any) => ConflictExpression;
   sql: (fragment: string, params?: any[]) => ConflictExpression;
-};
-
-export type OnConflictBuilder<T> = {
-  merge: (
-    mapper: (
-      t: ConflictMergeHelpers<T>,
-    ) => Partial<Record<ConflictColumn<T>, ConflictExpression>>,
-  ) => T;
-  doNothing: () => T | null;
-};
-
-export type InsertResult<T> = T & {
-  onConflict: (
-    target: ConflictColumn<T> | ConflictColumn<T>[],
-  ) => OnConflictBuilder<T>;
 };
 
 /** Nav-aware entity accessor for a specific table */
@@ -302,7 +309,7 @@ export type NavEntityAccessor<
   get: (id: number) => NavEntity<S, R, Table> | null;
   insert: (
     data: Omit<z.input<S[Table & keyof S]>, "id">,
-  ) => InsertResult<NavEntity<S, R, Table>>;
+  ) => NavEntity<S, R, Table>;
   insertMany: (
     rows: Omit<z.input<S[Table & keyof S]>, "id">[],
   ) => NavEntity<S, R, Table>[];
@@ -316,6 +323,17 @@ export type NavEntityAccessor<
   upsert: (
     conditions?: Partial<z.infer<S[Table & keyof S]>>,
     data?: Partial<z.infer<S[Table & keyof S]>>,
+  ) => NavEntity<S, R, Table>;
+  upsertOnConflict: (
+    data: Omit<z.input<S[Table & keyof S]>, "id">,
+    target:
+      | ConflictColumn<NavEntity<S, R, Table>>
+      | ConflictColumn<NavEntity<S, R, Table>>[],
+    merge: (
+      t: ConflictMergeHelpers<NavEntity<S, R, Table>>,
+    ) => Partial<
+      Record<ConflictColumn<NavEntity<S, R, Table>>, ConflictExpression>
+    >,
   ) => NavEntity<S, R, Table>;
   upsertMany: (
     rows: Partial<z.infer<S[Table & keyof S]>>[],
@@ -371,7 +389,7 @@ export type ReadonlyEntity<S extends z.ZodType<any>> = InferSchema<S>;
 
 export type EntityAccessor<S extends z.ZodType<any>> = {
   get: (id: number) => AugmentedEntity<S> | null;
-  insert: (data: EntityData<S>) => InsertResult<AugmentedEntity<S>>;
+  insert: (data: EntityData<S>) => AugmentedEntity<S>;
   insertMany: (rows: EntityData<S>[]) => AugmentedEntity<S>[];
   update: ((
     id: number,
@@ -381,6 +399,16 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
   upsert: (
     conditions?: Partial<InferSchema<S>>,
     data?: Partial<InferSchema<S>>,
+  ) => AugmentedEntity<S>;
+  upsertOnConflict: (
+    data: EntityData<S>,
+    target:
+      ConflictColumn<AugmentedEntity<S>> | ConflictColumn<AugmentedEntity<S>>[],
+    merge: (
+      t: ConflictMergeHelpers<AugmentedEntity<S>>,
+    ) => Partial<
+      Record<ConflictColumn<AugmentedEntity<S>>, ConflictExpression>
+    >,
   ) => AugmentedEntity<S>;
   upsertMany: (
     rows: Partial<InferSchema<S>>[],

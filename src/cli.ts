@@ -20,9 +20,7 @@ import {
 
 type CliDatabase = {
   tables(): string[];
-  columns(
-    tableName: string,
-  ): {
+  columns(tableName: string): {
     name: string;
     type: string;
     notnull: number;

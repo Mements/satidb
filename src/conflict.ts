@@ -1,8 +1,9 @@
 /**
  * conflict.ts — Native SQLite INSERT ... ON CONFLICT helpers.
  *
- * Provides the chainable `db.table.insert(row).onConflict(...).merge(...)`
- * API without exposing raw SQL for common merge policies.
+ * Keeps normal `insert(row)` eager/synchronous. Advanced conflict upserts use
+ * `db.table.upsertOnConflict(row, target, merge)` so validation and
+ * transaction rollback semantics remain identical to the original ORM.
  */
 import type { DatabaseContext } from "./context";
 import type { AugmentedEntity } from "./types";
@@ -14,12 +15,6 @@ export type ConflictExpr = {
   params: any[];
 };
 
-export type PendingInsertOperation = {
-  execute(): AugmentedEntity<any>;
-  cancel(): void;
-  isPending(): boolean;
-};
-
 function quoteIdent(value: string): string {
   return `"${String(value).replace(/"/g, '""')}"`;
 }
@@ -27,10 +22,14 @@ function quoteIdent(value: string): string {
 function normalizeConflictTarget(target: string | string[]): string[] {
   const columns = Array.isArray(target) ? target : [target];
   if (columns.length === 0)
-    throw new Error("onConflict() requires at least one column.");
+    throw new Error(
+      "upsertOnConflict() requires at least one conflict target column.",
+    );
   for (const column of columns) {
     if (!column || typeof column !== "string") {
-      throw new Error("onConflict() columns must be non-empty strings.");
+      throw new Error(
+        "upsertOnConflict() conflict target columns must be non-empty strings.",
+      );
     }
   }
   return columns;
@@ -45,61 +44,72 @@ export class ConflictMergeHelpers<
 > {
   constructor(private readonly tableName: string) {}
 
+  /** Current persisted value: table.field */
   current<K extends keyof T & string>(field: K): ConflictExpr {
     return makeExpr(`${quoteIdent(this.tableName)}.${quoteIdent(field)}`);
   }
 
+  /** Incoming value from the failed INSERT: excluded.field */
   excluded<K extends keyof T & string>(field: K): ConflictExpr {
     return makeExpr(`excluded.${quoteIdent(field)}`);
   }
 
-  /** Use excluded.field when it is non-null, otherwise keep the current table value. */
-  coalesceExcluded<K extends keyof T & string>(field: K): ConflictExpr {
+  /** Use incoming value when it is non-null, otherwise keep the current table value. */
+  excludedIfNotNull<K extends keyof T & string>(field: K): ConflictExpr {
     return makeExpr(
       `COALESCE(excluded.${quoteIdent(field)}, ${quoteIdent(this.tableName)}.${quoteIdent(field)})`,
     );
   }
 
-  /** Use excluded.field when it is neither NULL nor '', otherwise keep the current table value. */
-  coalesceExcludedNonEmpty<K extends keyof T & string>(field: K): ConflictExpr {
+  /** Use incoming value when it is neither NULL nor '', otherwise keep the current table value. */
+  excludedIfNotEmpty<K extends keyof T & string>(field: K): ConflictExpr {
     return makeExpr(
       `COALESCE(NULLIF(excluded.${quoteIdent(field)}, ''), ${quoteIdent(this.tableName)}.${quoteIdent(field)})`,
     );
   }
 
-  /** Keep the current value once it exists; otherwise use excluded.field. */
-  coalesceCurrentExcluded<K extends keyof T & string>(field: K): ConflictExpr {
+  /** Keep the first non-null value: current value wins unless it is NULL. */
+  keepFirst<K extends keyof T & string>(field: K): ConflictExpr {
     return makeExpr(
       `COALESCE(${quoteIdent(this.tableName)}.${quoteIdent(field)}, excluded.${quoteIdent(field)})`,
     );
   }
 
-  /**
-   * CASE WHEN excluded.field IS NOT NULL AND excluded.field != '' THEN excluded.field
-   * ELSE current.field END
-   */
-  keepExistingIfExcludedEmpty<K extends keyof T & string>(
-    field: K,
-  ): ConflictExpr {
-    const col = quoteIdent(field);
-    return makeExpr(
-      `CASE WHEN excluded.${col} IS NOT NULL AND excluded.${col} != '' ` +
-        `THEN excluded.${col} ELSE ${quoteIdent(this.tableName)}.${col} END`,
-    );
-  }
-
-  /** MAX(COALESCE(current.field, fallback), COALESCE(excluded.field, fallback)) */
-  maxCurrentExcluded<K extends keyof T & string>(
-    field: K,
-    fallback = 0,
-  ): ConflictExpr {
+  /** Keep the greater numeric value. */
+  max<K extends keyof T & string>(field: K, fallback = 0): ConflictExpr {
     if (!Number.isFinite(fallback))
-      throw new Error("maxCurrentExcluded() fallback must be a finite number.");
+      throw new Error("max() fallback must be a finite number.");
     const col = quoteIdent(field);
     return makeExpr(
       `MAX(COALESCE(${quoteIdent(this.tableName)}.${col}, ${fallback}), ` +
         `COALESCE(excluded.${col}, ${fallback}))`,
     );
+  }
+
+  // Backwards-compatible verbose aliases from the first conflict-upsert draft.
+  coalesceExcluded<K extends keyof T & string>(field: K): ConflictExpr {
+    return this.excludedIfNotNull(field);
+  }
+
+  coalesceExcludedNonEmpty<K extends keyof T & string>(field: K): ConflictExpr {
+    return this.excludedIfNotEmpty(field);
+  }
+
+  coalesceCurrentExcluded<K extends keyof T & string>(field: K): ConflictExpr {
+    return this.keepFirst(field);
+  }
+
+  keepExistingIfExcludedEmpty<K extends keyof T & string>(
+    field: K,
+  ): ConflictExpr {
+    return this.excludedIfNotEmpty(field);
+  }
+
+  maxCurrentExcluded<K extends keyof T & string>(
+    field: K,
+    fallback = 0,
+  ): ConflictExpr {
+    return this.max(field, fallback);
   }
 
   /** Set a column to a parameterized literal value. */
@@ -113,116 +123,6 @@ export class ConflictMergeHelpers<
       throw new Error("sql() requires a SQL fragment.");
     return makeExpr(fragment, params);
   }
-}
-
-export class OnConflictBuilder<
-  T extends Record<string, any> = Record<string, any>,
-> {
-  constructor(
-    private readonly ctx: DatabaseContext,
-    private readonly entityName: string,
-    private readonly data: Record<string, any>,
-    private readonly target: string[],
-  ) {}
-
-  merge(
-    mapper: (
-      helpers: ConflictMergeHelpers<T>,
-    ) => Partial<Record<keyof T & string, ConflictExpr>>,
-  ): AugmentedEntity<any> {
-    return nativeConflictMerge(
-      this.ctx,
-      this.entityName,
-      this.data,
-      this.target,
-      mapper as any,
-    );
-  }
-
-  doNothing(): AugmentedEntity<any> | null {
-    return nativeConflictDoNothing(
-      this.ctx,
-      this.entityName,
-      this.data,
-      this.target,
-    );
-  }
-}
-
-export function createLazyInsertResult(
-  ctx: DatabaseContext,
-  entityName: string,
-  data: Record<string, any>,
-  executeStandardInsert: () => AugmentedEntity<any>,
-): AugmentedEntity<any> {
-  let executed = false;
-  let cancelled = false;
-  let entity: AugmentedEntity<any> | null = null;
-
-  const pending: PendingInsertOperation = {
-    execute: () => {
-      if (cancelled) {
-        throw new Error(
-          `Insert into "${entityName}" was converted to an onConflict() operation.`,
-        );
-      }
-      if (!executed) {
-        executed = true;
-        ctx._unregisterPendingInsert?.(pending);
-        entity = executeStandardInsert();
-      }
-      return entity!;
-    },
-    cancel: () => {
-      cancelled = true;
-      ctx._unregisterPendingInsert?.(pending);
-    },
-    isPending: () => !executed && !cancelled,
-  };
-
-  ctx._registerPendingInsert?.(pending);
-
-  // Preserve the old side-effect semantics for fire-and-forget inserts:
-  // if the caller does not access properties and does not chain onConflict(),
-  // execute the insert at the end of the current turn. Any subsequent ORM
-  // operation also flushes this queue synchronously before it runs.
-  queueMicrotask(() => {
-    if (pending.isPending()) pending.execute();
-  });
-
-  const materialize = () => pending.execute();
-
-  return new Proxy({} as any, {
-    get(_target, prop, receiver) {
-      if (prop === "onConflict") {
-        pending.cancel();
-        return (target: string | string[]) =>
-          new OnConflictBuilder(
-            ctx,
-            entityName,
-            data,
-            normalizeConflictTarget(target),
-          );
-      }
-      if (prop === Symbol.toStringTag) return "InsertResult";
-      if (prop === "then") return undefined;
-      const value = Reflect.get(materialize(), prop, receiver);
-      return typeof value === "function" ? value.bind(entity) : value;
-    },
-    set(_target, prop, value, receiver) {
-      return Reflect.set(materialize(), prop, value, receiver);
-    },
-    has(_target, prop) {
-      if (prop === "onConflict") return true;
-      return prop in materialize();
-    },
-    ownKeys() {
-      return Reflect.ownKeys(materialize());
-    },
-    getOwnPropertyDescriptor(_target, prop) {
-      return Object.getOwnPropertyDescriptor(materialize(), prop);
-    },
-  }) as AugmentedEntity<any>;
 }
 
 function prepareInsertData(
@@ -274,44 +174,47 @@ function fetchByConflictTarget(
   );
 }
 
-function nativeConflictMerge(
+export function upsertOnConflict<T extends Record<string, any>>(
   ctx: DatabaseContext,
   entityName: string,
   data: Record<string, any>,
-  target: string[],
-  mapper: (helpers: ConflictMergeHelpers<any>) => Record<string, ConflictExpr>,
+  target: string | string[],
+  mapper: (
+    helpers: ConflictMergeHelpers<T>,
+  ) => Partial<Record<keyof T & string, ConflictExpr>>,
 ): AugmentedEntity<any> {
+  const conflictTarget = normalizeConflictTarget(target);
   const transformed = prepareInsertData(ctx, entityName, data);
   const columns = Object.keys(transformed);
   if (columns.length === 0)
     throw new Error(
-      "onConflict().merge() requires at least one insert column.",
+      "upsertOnConflict().merge requires at least one insert column.",
     );
 
-  for (const column of target) {
+  for (const column of conflictTarget) {
     if (!(column in transformed)) {
       throw new Error(
-        `onConflict(${JSON.stringify(column)}) requires the inserted row to include that column.`,
+        `upsertOnConflict(${JSON.stringify(column)}) requires the inserted row to include that column.`,
       );
     }
   }
 
-  const helpers = new ConflictMergeHelpers(entityName);
+  const helpers = new ConflictMergeHelpers<T>(entityName);
   const mergeMap = mapper(helpers) ?? {};
   const assignments: string[] = [];
-  const params: any[] = [];
+  const assignmentParams: any[] = [];
 
   for (const [column, expr] of Object.entries(mergeMap)) {
     if (!expr || typeof expr.sql !== "string" || !Array.isArray(expr.params)) {
       throw new Error(`Invalid merge expression for column "${column}".`);
     }
     assignments.push(`${quoteIdent(column)} = ${expr.sql}`);
-    params.push(...expr.params);
+    assignmentParams.push(...expr.params);
   }
 
   if (assignments.length === 0) {
     throw new Error(
-      "onConflict().merge() requires at least one column assignment.",
+      "upsertOnConflict() requires at least one merge column assignment.",
     );
   }
 
@@ -319,35 +222,41 @@ function nativeConflictMerge(
   const sql =
     `INSERT INTO ${quoteIdent(entityName)} (${columns.map(quoteIdent).join(", ")}) ` +
     `VALUES (${columns.map(() => "?").join(", ")}) ` +
-    `ON CONFLICT (${target.map(quoteIdent).join(", ")}) DO UPDATE SET ${assignments.join(", ")}`;
+    `ON CONFLICT (${conflictTarget.map(quoteIdent).join(", ")}) DO UPDATE SET ${assignments.join(", ")}`;
 
   ctx._m(`SQL: INSERT ${entityName} ON CONFLICT`, () => {
-    ctx._stmt(sql).run(...insertParams, ...params);
+    ctx._stmt(sql).run(...insertParams, ...assignmentParams);
   });
 
-  const entity = fetchByConflictTarget(ctx, entityName, target, transformed);
+  const entity = fetchByConflictTarget(
+    ctx,
+    entityName,
+    conflictTarget,
+    transformed,
+  );
   if (!entity)
     throw new Error("Failed to retrieve entity after conflict upsert");
   return entity;
 }
 
-function nativeConflictDoNothing(
+export function insertOnConflictDoNothing<T extends Record<string, any>>(
   ctx: DatabaseContext,
   entityName: string,
   data: Record<string, any>,
-  target: string[],
+  target: string | string[],
 ): AugmentedEntity<any> | null {
+  const conflictTarget = normalizeConflictTarget(target);
   const transformed = prepareInsertData(ctx, entityName, data);
   const columns = Object.keys(transformed);
   if (columns.length === 0)
     throw new Error(
-      "onConflict().doNothing() requires at least one insert column.",
+      "insertOnConflictDoNothing() requires at least one insert column.",
     );
 
-  for (const column of target) {
+  for (const column of conflictTarget) {
     if (!(column in transformed)) {
       throw new Error(
-        `onConflict(${JSON.stringify(column)}) requires the inserted row to include that column.`,
+        `insertOnConflictDoNothing(${JSON.stringify(column)}) requires the inserted row to include that column.`,
       );
     }
   }
@@ -355,11 +264,11 @@ function nativeConflictDoNothing(
   const sql =
     `INSERT INTO ${quoteIdent(entityName)} (${columns.map(quoteIdent).join(", ")}) ` +
     `VALUES (${columns.map(() => "?").join(", ")}) ` +
-    `ON CONFLICT (${target.map(quoteIdent).join(", ")}) DO NOTHING`;
+    `ON CONFLICT (${conflictTarget.map(quoteIdent).join(", ")}) DO NOTHING`;
 
   ctx._m(`SQL: INSERT ${entityName} ON CONFLICT DO NOTHING`, () => {
     ctx._stmt(sql).run(...columns.map((col) => transformed[col]));
   });
 
-  return fetchByConflictTarget(ctx, entityName, target, transformed);
+  return fetchByConflictTarget(ctx, entityName, conflictTarget, transformed);
 }

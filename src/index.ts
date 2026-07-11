@@ -26,8 +26,6 @@ export type {
   ReadonlyEntity,
   ReadonlyEntityAccessor,
   TypedReadonlyAccessors,
-  InsertResult,
-  OnConflictBuilder,
   ConflictMergeHelpers,
   ConflictExpression,
   ConflictColumn,
