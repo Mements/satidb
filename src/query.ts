@@ -25,6 +25,7 @@ export type {
 } from "./iqo";
 
 export { QueryBuilder } from "./builder";
+export type { QueryCacheOptions } from "./builder";
 import { QueryBuilder } from "./builder";
 
 export {

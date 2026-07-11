@@ -24,6 +24,29 @@ import {
   compileIQO,
 } from "./iqo";
 
+export type QueryCacheOptions = {
+  /** How long this specific query result should stay in the in-process cache. */
+  ttlMs: number;
+};
+
+type CacheEntry<T> = {
+  expiresAtMs: number;
+  value: T;
+};
+
+const queryResultCache = new Map<string, CacheEntry<unknown>>();
+let lastCachePruneMs = 0;
+
+function cacheKeyFor(
+  operation: string,
+  sql: string,
+  params: any[],
+  raw: boolean,
+  includes: string[],
+): string {
+  return JSON.stringify({ operation, sql, params, raw, includes });
+}
+
 // =============================================================================
 // QueryBuilder Class
 // =============================================================================
@@ -64,6 +87,7 @@ export class QueryBuilder<
         parentIds: number[],
       ) => { key: string; groups: Map<number, any[]> } | null)
     | null;
+  private cacheTtlMs: number | null = null;
 
   constructor(
     tableName: string,
@@ -308,6 +332,33 @@ export class QueryBuilder<
   }
 
   /**
+   * Cache this query builder's terminal read result in-process for a short TTL.
+   *
+   * Useful for hot read-only views/aggregates such as rolling 1m/5m/15m
+   * price windows. Mutations are never cached, and caching is opt-in per query.
+   *
+   * ```ts
+   * db.tokenPriceWindows.select().where({ mint }).cache({ ttlMs: 500 }).get()
+   * ```
+   */
+  cache(options: QueryCacheOptions | number): this {
+    const ttlMs = typeof options === "number" ? options : options.ttlMs;
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+      throw new Error(
+        "cache({ ttlMs }) requires a positive finite ttlMs value",
+      );
+    }
+    this.cacheTtlMs = Math.trunc(ttlMs);
+    return this;
+  }
+
+  /** Disable caching on this query builder. */
+  noCache(): this {
+    this.cacheTtlMs = null;
+    return this;
+  }
+
+  /**
    * Add a raw SQL WHERE fragment with parameterized values.
    * Can be combined with `.where()` — fragments are AND'd together.
    *
@@ -409,23 +460,57 @@ export class QueryBuilder<
     return results;
   }
 
+  private _cached<TValue>(
+    operation: string,
+    sql: string,
+    params: any[],
+    raw: boolean,
+    compute: () => TValue,
+  ): TValue {
+    if (!this.cacheTtlMs) return compute();
+
+    const key = cacheKeyFor(operation, sql, params, raw, this.iqo.includes);
+    const now = Date.now();
+    if (now - lastCachePruneMs > 60_000) {
+      lastCachePruneMs = now;
+      for (const [entryKey, entry] of queryResultCache) {
+        if (entry.expiresAtMs <= now) queryResultCache.delete(entryKey);
+      }
+    }
+    const cached = queryResultCache.get(key) as CacheEntry<TValue> | undefined;
+    if (cached && cached.expiresAtMs > now) {
+      return cached.value;
+    }
+
+    const value = compute();
+    queryResultCache.set(key, {
+      expiresAtMs: now + this.cacheTtlMs,
+      value,
+    });
+    return value;
+  }
+
   // ---------- Terminal / Execution Methods ----------
 
   /** Execute the query and return all matching rows. */
   all(): TResult[] {
     const { sql, params } = compileIQO(this.tableName, this.iqo);
-    const results = this.executor(sql, params, this.iqo.raw);
-    return this._applyEagerLoads(results) as unknown as TResult[];
+    return this._cached("all", sql, params, this.iqo.raw, () => {
+      const results = this.executor(sql, params, this.iqo.raw);
+      return this._applyEagerLoads(results) as unknown as TResult[];
+    });
   }
 
   /** Execute the query and return the first matching row, or null. */
   get(): TResult | null {
     this.iqo.limit = 1;
     const { sql, params } = compileIQO(this.tableName, this.iqo);
-    const result = this.singleExecutor(sql, params, this.iqo.raw);
-    if (!result) return null;
-    const [loaded] = this._applyEagerLoads([result]);
-    return (loaded ?? null) as TResult | null;
+    return this._cached("get", sql, params, this.iqo.raw, () => {
+      const result = this.singleExecutor(sql, params, this.iqo.raw);
+      if (!result) return null;
+      const [loaded] = this._applyEagerLoads([result]);
+      return (loaded ?? null) as unknown as TResult | null;
+    });
   }
 
   /** Execute the query and return the count of matching rows. */
@@ -437,8 +522,10 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       "SELECT COUNT(*) as count FROM",
     );
-    const results = this.executor(countSql, params, true);
-    return (results[0] as any)?.count ?? 0;
+    return this._cached("count", countSql, params, true, () => {
+      const results = this.executor(countSql, params, true);
+      return (results[0] as any)?.count ?? 0;
+    });
   }
 
   /** Alias for get() — returns the first matching row or null. */
@@ -466,8 +553,10 @@ export class QueryBuilder<
       selectSql
         .replace(/^SELECT .+? FROM/, "SELECT 1 FROM")
         .replace(/ LIMIT \d+/, "") + " LIMIT 1";
-    const results = this.executor(existsSql, params, true);
-    return results.length > 0;
+    return this._cached("exists", existsSql, params, true, () => {
+      const results = this.executor(existsSql, params, true);
+      return results.length > 0;
+    });
   }
 
   /** Group results by one or more columns. */
@@ -553,8 +642,10 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       `SELECT COALESCE(SUM("${field}"), 0) as val FROM`,
     );
-    const results = this.executor(aggSql, params, true);
-    return (results[0] as any)?.val ?? 0;
+    return this._cached(`sum:${String(field)}`, aggSql, params, true, () => {
+      const results = this.executor(aggSql, params, true);
+      return (results[0] as any)?.val ?? 0;
+    });
   }
 
   /** Returns the AVG of a numeric column. */
@@ -564,8 +655,10 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       `SELECT AVG("${field}") as val FROM`,
     );
-    const results = this.executor(aggSql, params, true);
-    return (results[0] as any)?.val ?? 0;
+    return this._cached(`avg:${String(field)}`, aggSql, params, true, () => {
+      const results = this.executor(aggSql, params, true);
+      return (results[0] as any)?.val ?? 0;
+    });
   }
 
   /** Returns the MIN of a column. */
@@ -575,8 +668,10 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       `SELECT MIN("${field}") as val FROM`,
     );
-    const results = this.executor(aggSql, params, true);
-    return (results[0] as any)?.val ?? null;
+    return this._cached(`min:${String(field)}`, aggSql, params, true, () => {
+      const results = this.executor(aggSql, params, true);
+      return (results[0] as any)?.val ?? null;
+    });
   }
 
   /** Returns the MAX of a column. */
@@ -586,8 +681,10 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       `SELECT MAX("${field}") as val FROM`,
     );
-    const results = this.executor(aggSql, params, true);
-    return (results[0] as any)?.val ?? null;
+    return this._cached(`max:${String(field)}`, aggSql, params, true, () => {
+      const results = this.executor(aggSql, params, true);
+      return (results[0] as any)?.val ?? null;
+    });
   }
 
   /** Paginate results. Returns { data, total, page, perPage, pages }. */
@@ -628,7 +725,13 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       `SELECT ${groupCols}, COUNT(*) as count FROM`,
     );
-    return this.executor(aggSql, params, true) as any;
+    return this._cached(
+      "countGrouped",
+      aggSql,
+      params,
+      true,
+      () => this.executor(aggSql, params, true) as any,
+    );
   }
 
   // ---------- Query Inspection ----------
@@ -658,8 +761,16 @@ export class QueryBuilder<
       /^SELECT .+? FROM/,
       `SELECT "${column}" FROM`,
     );
-    const results = this.executor(pluckSql, params, true);
-    return results.map((r: any) => r[column]);
+    return this._cached(
+      `pluck:${String(column)}`,
+      pluckSql,
+      params,
+      true,
+      () => {
+        const results = this.executor(pluckSql, params, true);
+        return results.map((r: any) => r[column]);
+      },
+    );
   }
 
   /** Clone this QueryBuilder so you can fork a query. */
@@ -674,6 +785,7 @@ export class QueryBuilder<
     );
     // Deep-copy the IQO state
     (cloned as any).iqo = JSON.parse(JSON.stringify(this.iqo));
+    (cloned as any).cacheTtlMs = this.cacheTtlMs;
     return cloned;
   }
 

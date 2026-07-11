@@ -36,6 +36,7 @@ export {
   ColumnNode,
   compileIQO,
   type ProxyQueryResult,
+  type QueryCacheOptions,
 } from "./query";
 export {
   type ASTNode,
