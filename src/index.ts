@@ -57,3 +57,15 @@ export {
   op,
 } from "./ast";
 export { ConflictMergeHelpers as ConflictMergeHelperRuntime } from "./conflict";
+
+export { createMigrator, DatabaseMigrator } from "./migrator";
+export type {
+  MigrationBackup,
+  MigrationColumnInfo,
+  MigrationColumnMapping,
+  MigrationConflictStrategy,
+  MigrationPlan,
+  MigrationPlanPreview,
+  MigrationApplyResult,
+} from "./migrator";
+export { runCli } from "./cli";

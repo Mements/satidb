@@ -41,6 +41,7 @@ import { transformFromStorage } from "./schema";
 import type { DatabaseContext } from "./context";
 import type { PendingInsertOperation } from "./conflict";
 import { buildWhereClause } from "./helpers";
+import { createMigrator, type DatabaseMigrator } from "./migrator";
 import { attachMethods } from "./entity";
 import {
   insert,
@@ -762,6 +763,19 @@ class _Database<Schemas extends SchemaMap> {
   }
 
   // =========================================================================
+  // Backup Table Data Migration
+  // =========================================================================
+
+  /**
+   * Create a data migrator for copying rows from schema-sync backup tables
+   * such as users_v1 into the current users table. Backup tables are never
+   * removed automatically.
+   */
+  public migrator(): DatabaseMigrator {
+    return createMigrator(this);
+  }
+
+  // =========================================================================
   // Raw SQL
   // =========================================================================
 
@@ -795,7 +809,13 @@ class _Database<Schemas extends SchemaMap> {
   /** Return column info for a table via PRAGMA table_info. */
   public columns(
     tableName: string,
-  ): { name: string; type: string; notnull: number; pk: number }[] {
+  ): {
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }[] {
     return this.db.query(`PRAGMA table_info("${tableName}")`).all() as any[];
   }
 
