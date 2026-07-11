@@ -39,7 +39,10 @@ import {
 } from "./schema";
 import { transformFromStorage } from "./schema";
 import type { DatabaseContext } from "./context";
-import { upsertOnConflict as nativeUpsertOnConflict } from "./conflict";
+import {
+  upsertOnConflict as nativeUpsertOnConflict,
+  insertOnConflictDoNothing,
+} from "./conflict";
 import { buildWhereClause } from "./helpers";
 import { createMigrator, type DatabaseMigrator } from "./migrator";
 import { attachMethods } from "./entity";
@@ -205,10 +208,37 @@ class _Database<Schemas extends SchemaMap> {
             );
           return createUpdateBuilder(this._ctx, entityName, idOrData);
         },
-        upsert: (conditions, data) =>
-          this._m(`${entityName}.upsert`, () =>
-            upsert(this._ctx, entityName, data, conditions),
-          ),
+        upsert: ((first: any, second?: any) =>
+          this._m(`${entityName}.upsert`, () => {
+            if (second && typeof second === "object" && "on" in second) {
+              if (second.doNothing === true) {
+                const entity = insertOnConflictDoNothing(
+                  this._ctx,
+                  entityName,
+                  first,
+                  second.on,
+                );
+                if (!entity)
+                  throw new Error(
+                    `Failed to retrieve entity after ${entityName}.upsert(..., { doNothing: true })`,
+                  );
+                return entity;
+              }
+              if (typeof second.merge !== "function") {
+                throw new Error(
+                  `${entityName}.upsert(row, { on, merge }) requires a merge function unless doNothing is true.`,
+                );
+              }
+              return nativeUpsertOnConflict(
+                this._ctx,
+                entityName,
+                first,
+                second.on,
+                second.merge,
+              );
+            }
+            return upsert(this._ctx, entityName, second, first);
+          })) as any,
         upsertOnConflict: (data: any, target: any, merge: any) =>
           this._m(`${entityName}.upsertOnConflict`, () =>
             nativeUpsertOnConflict(this._ctx, entityName, data, target, merge),

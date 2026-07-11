@@ -300,6 +300,24 @@ export type ConflictMergeHelpers<T> = {
   sql: (fragment: string, params?: any[]) => ConflictExpression;
 };
 
+export type UpsertConflictOptions<T> = {
+  /** Column or columns used by SQLite's ON CONFLICT (...) target. */
+  on: ConflictColumn<T> | ConflictColumn<T>[];
+} & (
+  | {
+      /** Per-column merge rules. Compiles to ON CONFLICT (...) DO UPDATE SET ... */
+      merge: (
+        t: ConflictMergeHelpers<T>,
+      ) => Partial<Record<ConflictColumn<T>, ConflictExpression>>;
+      doNothing?: never;
+    }
+  | {
+      /** Insert if missing; if the conflict target already exists, leave the row unchanged. */
+      doNothing: true;
+      merge?: never;
+    }
+);
+
 /** Nav-aware entity accessor for a specific table */
 export type NavEntityAccessor<
   S extends SchemaMap,
@@ -320,10 +338,15 @@ export type NavEntityAccessor<
     ((
       data: Partial<Omit<z.input<S[Table & keyof S]>, "id">>,
     ) => UpdateBuilder<NavEntity<S, R, Table>>);
-  upsert: (
+  upsert: ((
     conditions?: Partial<z.infer<S[Table & keyof S]>>,
     data?: Partial<z.infer<S[Table & keyof S]>>,
-  ) => NavEntity<S, R, Table>;
+  ) => NavEntity<S, R, Table>) &
+    ((
+      data: Omit<z.input<S[Table & keyof S]>, "id">,
+      options: UpsertConflictOptions<NavEntity<S, R, Table>>,
+    ) => NavEntity<S, R, Table>);
+  /** Compatibility alias for the native conflict-upsert path. Prefer `.upsert(row, { on, merge })`. */
   upsertOnConflict: (
     data: Omit<z.input<S[Table & keyof S]>, "id">,
     target:
@@ -396,10 +419,15 @@ export type EntityAccessor<S extends z.ZodType<any>> = {
     data: Partial<EntityData<S>>,
   ) => AugmentedEntity<S> | null) &
     ((data: Partial<EntityData<S>>) => UpdateBuilder<AugmentedEntity<S>>);
-  upsert: (
+  upsert: ((
     conditions?: Partial<InferSchema<S>>,
     data?: Partial<InferSchema<S>>,
-  ) => AugmentedEntity<S>;
+  ) => AugmentedEntity<S>) &
+    ((
+      data: EntityData<S>,
+      options: UpsertConflictOptions<AugmentedEntity<S>>,
+    ) => AugmentedEntity<S>);
+  /** Compatibility alias for the native conflict-upsert path. Prefer `.upsert(row, { on, merge })`. */
   upsertOnConflict: (
     data: EntityData<S>,
     target:

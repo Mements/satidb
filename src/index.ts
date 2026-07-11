@@ -29,6 +29,7 @@ export type {
   ConflictMergeHelpers,
   ConflictExpression,
   ConflictColumn,
+  UpsertConflictOptions,
 } from "./types";
 export { defineView } from "./types";
 
